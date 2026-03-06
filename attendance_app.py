@@ -5,6 +5,21 @@ from datetime import timedelta, date
 
 st.set_page_config(page_title="Attendance Tracker", page_icon="🏢", layout="wide")
 
+# ─── Password Gate ────────────────────────────────────────────────────────────
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🏢 Attendance Tracker")
+    pwd = st.text_input("Enter password", type="password")
+    if st.button("Sign in"):
+        if pwd == "TechSur!23$":
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
+
 st.title("🏢 Attendance Tracker")
 st.caption("Upload any access log Excel sheet to get attendance stats per employee.")
 
