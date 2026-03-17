@@ -41,18 +41,18 @@ with st.sidebar:
         st.warning("Install `msal` and `requests` to enable Azure AD sync.")
     else:
         import os
-        _default_tenant = st.session_state.get("az_tenant", os.environ.get("AZURE_TENANT_ID", ""))
-        _default_client = st.session_state.get("az_client", os.environ.get("AZURE_CLIENT_ID", ""))
-        _default_secret = st.session_state.get("az_secret", os.environ.get("AZURE_CLIENT_SECRET", ""))
+        tenant_id     = os.environ.get("AZURE_TENANT_ID", "")
+        client_id     = os.environ.get("AZURE_CLIENT_ID", "")
+        client_secret = os.environ.get("AZURE_CLIENT_SECRET", "")
 
-        tenant_id     = st.text_input("Tenant ID",     value=_default_tenant, type="default")
-        client_id     = st.text_input("Client ID",     value=_default_client, type="default")
-        client_secret = st.text_input("Client Secret", value=_default_secret, type="password")
+        if not (tenant_id and client_id and client_secret):
+            st.error("Azure AD credentials are not configured. Contact your administrator.")
+        else:
+            st.caption("Connected to **TechSur Solutions LLC**")
 
-        if st.button("🔄 Sync from Azure AD", use_container_width=True):
-            if not (tenant_id and client_id and client_secret):
-                st.error("Fill in all three fields.")
-            else:
+        if st.button("🔄 Sync from Azure AD", use_container_width=True,
+                     disabled=not (tenant_id and client_id and client_secret)):
+            if True:
                 with st.spinner("Authenticating…"):
                     try:
                         app = msal.ConfidentialClientApplication(
