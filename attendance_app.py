@@ -33,96 +33,53 @@ if not st.session_state.authenticated:
 st.title("🏢 Attendance Tracker")
 st.caption(f"Only counts badge events at **{OFFICE_ADDRESS}**. Weekdays only.")
 
-# ─── Azure AD Sidebar ─────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("Azure AD — Manager Sync")
+# ─── Auto-sync Azure AD once per session ─────────────────────────────────────
+def _sync_azure_ad():
+    import os
+    tenant_id     = os.environ.get("AZURE_TENANT_ID", "")
+    client_id     = os.environ.get("AZURE_CLIENT_ID", "")
+    client_secret = os.environ.get("AZURE_CLIENT_SECRET", "")
+    if not (AZURE_AVAILABLE and tenant_id and client_id and client_secret):
+        return
+    try:
+        app = msal.ConfidentialClientApplication(
+            client_id,
+            authority=f"https://login.microsoftonline.com/{tenant_id}",
+            client_credential=client_secret,
+        )
+        result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+        if "access_token" not in result:
+            return
+        token   = result["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        url = (
+            "https://graph.microsoft.com/v1.0/users"
+            "?$select=displayName,mail,userPrincipalName"
+            "&$expand=manager($select=displayName,mail)"
+            "&$top=999"
+        )
+        users = []
+        while url:
+            resp = http_requests.get(url, headers=headers)
+            data = resp.json()
+            if "error" in data:
+                break
+            users.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+        rows = []
+        for u in users:
+            mgr = u.get("manager")
+            rows.append({
+                "Employee":      u.get("displayName", ""),
+                "Manager":       mgr.get("displayName", "No Manager") if mgr else "No Manager",
+                "Manager Email": mgr.get("mail", "") if mgr else "",
+            })
+        st.session_state["manager_df"] = pd.DataFrame(rows)
+    except Exception:
+        pass
 
-    if not AZURE_AVAILABLE:
-        st.warning("Install `msal` and `requests` to enable Azure AD sync.")
-    else:
-        import os
-        tenant_id     = os.environ.get("AZURE_TENANT_ID", "")
-        client_id     = os.environ.get("AZURE_CLIENT_ID", "")
-        client_secret = os.environ.get("AZURE_CLIENT_SECRET", "")
-
-        if not (tenant_id and client_id and client_secret):
-            st.error("Azure AD credentials are not configured. Contact your administrator.")
-        else:
-            st.caption("Connected to **TechSur Solutions LLC**")
-
-        if st.button("🔄 Sync from Azure AD", use_container_width=True,
-                     disabled=not (tenant_id and client_id and client_secret)):
-            if True:
-                with st.spinner("Authenticating…"):
-                    try:
-                        app = msal.ConfidentialClientApplication(
-                            client_id,
-                            authority=f"https://login.microsoftonline.com/{tenant_id}",
-                            client_credential=client_secret,
-                        )
-                        result = app.acquire_token_for_client(
-                            scopes=["https://graph.microsoft.com/.default"]
-                        )
-                        if "access_token" not in result:
-                            st.error(f"Auth failed: {result.get('error_description', result.get('error'))}")
-                        else:
-                            token = result["access_token"]
-                            headers = {"Authorization": f"Bearer {token}"}
-                            # Fetch all users with manager expanded — paginate
-                            url = (
-                                "https://graph.microsoft.com/v1.0/users"
-                                "?$select=displayName,mail,userPrincipalName"
-                                "&$expand=manager($select=displayName,mail)"
-                                "&$top=999"
-                            )
-                            users = []
-                            while url:
-                                resp = http_requests.get(url, headers=headers)
-                                data = resp.json()
-                                if "error" in data:
-                                    st.error(f"Graph error: {data['error'].get('message')}")
-                                    break
-                                users.extend(data.get("value", []))
-                                url = data.get("@odata.nextLink")
-
-                            rows = []
-                            for u in users:
-                                mgr = u.get("manager")
-                                rows.append({
-                                    "Employee":      u.get("displayName", ""),
-                                    "Manager":       mgr.get("displayName", "No Manager") if mgr else "No Manager",
-                                    "Manager Email": mgr.get("mail", "") if mgr else "",
-                                })
-                            manager_df = pd.DataFrame(rows)
-                            st.session_state["manager_df"] = manager_df
-                            st.session_state["az_tenant"] = tenant_id
-                            st.session_state["az_client"] = client_id
-                            st.session_state["az_secret"] = client_secret
-                            st.success(f"Synced {len(manager_df)} employees from Azure AD.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-
-    st.divider()
-    st.subheader("Or upload manager CSV")
-    st.caption("CSV must have columns: **Employee**, **Manager**, **Manager Email**")
-    mgr_file = st.file_uploader("Manager CSV", type=["csv"], key="mgr_upload")
-    if mgr_file:
-        try:
-            uploaded_mgr = pd.read_csv(mgr_file)
-            required = {"Employee", "Manager", "Manager Email"}
-            if not required.issubset(set(uploaded_mgr.columns)):
-                st.error(f"CSV must have columns: {', '.join(required)}")
-            else:
-                st.session_state["manager_df"] = uploaded_mgr
-                st.success(f"Loaded {len(uploaded_mgr)} rows.")
-        except Exception as e:
-            st.error(f"Could not read CSV: {e}")
-
-    if "manager_df" in st.session_state:
-        st.success(f"Manager data loaded: {len(st.session_state['manager_df'])} employees")
-        if st.button("Clear manager data"):
-            del st.session_state["manager_df"]
-            st.rerun()
+if "manager_df" not in st.session_state:
+    _sync_azure_ad()
 
 
 # ─── File Upload ─────────────────────────────────────────────────────────────
