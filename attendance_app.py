@@ -360,12 +360,8 @@ if view_mode == "Overall Report":
 elif view_mode == "By Manager":
     all_managers = sorted(unique_days["Manager"].dropna().unique().tolist())
 
-    manager_filter = st.selectbox(
-        "Filter to a specific manager (or see all below)",
-        ["All Managers"] + all_managers,
-    )
-
-    managers_to_show = all_managers if manager_filter == "All Managers" else [manager_filter]
+    jump_to = st.selectbox("Jump to a manager", ["— Show all —"] + all_managers)
+    managers_to_show = all_managers if jump_to == "— Show all —" else [jump_to]
 
     for mgr in managers_to_show:
         team = unique_days[unique_days["Manager"] == mgr].copy()
@@ -373,33 +369,72 @@ elif view_mode == "By Manager":
             continue
 
         mgr_email = team["Manager Email"].iloc[0] if "Manager Email" in team.columns else ""
-        label = f"{mgr}  ({mgr_email})" if mgr_email else mgr
-        avg_pct = team["Attendance %"].mean()
         team_count = len(team)
+        avg_pct    = team["Attendance %"].mean()
+        green_count  = (team["Attendance %"] >= 80).sum()
+        yellow_count = ((team["Attendance %"] >= 50) & (team["Attendance %"] < 80)).sum()
+        red_count    = (team["Attendance %"] < 50).sum()
 
-        with st.expander(f"👤 **{label}** — {team_count} direct report(s) — avg {avg_pct:.1f}%", expanded=(manager_filter != "All Managers")):
-            styled_team = (
-                team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]]
-                .rename(columns={"_name": "Employee"})
-                .style.applymap(color_pct, subset=["Attendance %"])
-            )
-            st.dataframe(styled_team, use_container_width=True, height=min(50 + team_count * 38, 400))
+        # ── Manager header banner ──────────────────────────────────────────────
+        st.markdown(
+            f"""
+            <div style="
+                background: linear-gradient(90deg,#1a2a3a,#0e1a2a);
+                border-left: 5px solid #3a8fd4;
+                border-radius: 8px;
+                padding: 16px 20px;
+                margin: 24px 0 8px 0;
+            ">
+                <div style="font-size:20px; font-weight:700; color:#e8f4fd;">
+                    👤 {mgr}
+                </div>
+                {"<div style='font-size:13px; color:#8ab4cc; margin-top:4px;'>📧 " + mgr_email + "</div>" if mgr_email else ""}
+                <div style="font-size:13px; color:#8ab4cc; margin-top:2px;">
+                    Period: {start_date.strftime("%b %d, %Y")} — {end_date.strftime("%b %d, %Y")} &nbsp;|&nbsp; {total_weekdays} working days
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-            chart_team = team.rename(columns={"_name": "Employee"})
-            st.plotly_chart(make_bar_chart(chart_team, title=f"{mgr}'s Team"), use_container_width=True)
+        # ── Team summary stats ─────────────────────────────────────────────────
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Direct Reports",  team_count)
+        s2.metric("Team Avg",        f"{avg_pct:.1f}%")
+        s3.metric("On Track (≥80%)", green_count,  delta=None)
+        s4.metric("At Risk (50–79%)", yellow_count, delta=None)
+        s5.metric("Critical (<50%)", red_count,    delta=None)
 
-            # Per-manager CSV export
-            export_team = team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]].rename(
-                columns={"_name": "Employee"}
-            )
-            safe_name = mgr.replace(" ", "_").replace("/", "-")
-            st.download_button(
-                f"⬇ Download {mgr}'s report",
-                export_team.to_csv(index=False).encode("utf-8"),
-                f"attendance_{safe_name}_{start_date}_{end_date}.csv",
-                "text/csv",
-                key=f"dl_{mgr}",
-            )
+        # ── Attendance table ───────────────────────────────────────────────────
+        display_team = (
+            team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]]
+            .rename(columns={"_name": "Employee"})
+            .reset_index(drop=True)
+        )
+        display_team.index += 1
+
+        styled_team = display_team.style.applymap(color_pct, subset=["Attendance %"])
+        st.dataframe(styled_team, use_container_width=True, height=min(80 + team_count * 38, 450))
+
+        # ── Bar chart ─────────────────────────────────────────────────────────
+        chart_team = team.rename(columns={"_name": "Employee"})
+        st.plotly_chart(
+            make_bar_chart(chart_team, title=f"{mgr} — Team Attendance"),
+            use_container_width=True,
+            key=f"chart_{mgr}",
+        )
+
+        # ── Download ──────────────────────────────────────────────────────────
+        safe_name = mgr.replace(" ", "_").replace("/", "-")
+        st.download_button(
+            f"⬇ Download {mgr}'s report (CSV)",
+            display_team.to_csv(index=False).encode("utf-8"),
+            f"attendance_{safe_name}_{start_date}_{end_date}.csv",
+            "text/csv",
+            key=f"dl_{mgr}",
+        )
+
+        st.divider()
 
 # ─── Individual Lookup ────────────────────────────────────────────────────────
 st.subheader("🔍 Look up a specific employee")
