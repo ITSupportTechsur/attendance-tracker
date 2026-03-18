@@ -72,11 +72,6 @@ def _sync_azure_ad():
             url = data.get("@odata.nextLink")
         rows = []
         for u in users:
-            upn  = (u.get("userPrincipalName") or "").lower()
-            mail = (u.get("mail") or "").lower()
-            # Skip guest / service accounts — keep only @techsur.solutions identities
-            if TECHSUR_DOMAIN not in upn and TECHSUR_DOMAIN not in mail:
-                continue
             mgr = u.get("manager")
             rows.append({
                 "Employee":      u.get("displayName", ""),
