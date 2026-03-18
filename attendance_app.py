@@ -230,17 +230,7 @@ with col4:
     )
     apply_addr_filter = selected_addr_col != "(None — no address filter)"
 
-    tenant_options = ["(None — no tenant filter)"] + all_cols
-    tenant_default_idx = (
-        tenant_options.index(tenant_col) if tenant_col and tenant_col in tenant_options else 0
-    )
-    selected_tenant_col = st.selectbox(
-        "Tenant / Organization column",
-        tenant_options,
-        index=tenant_default_idx,
-        help="Only rows where this column equals 'Techsur Solutions' will be counted.",
-    )
-    apply_tenant_filter = selected_tenant_col != "(None — no tenant filter)"
+    apply_tenant_filter = tenant_col is not None
 
 # ─── Build working dataframe ─────────────────────────────────────────────────
 df = df_raw.copy()
@@ -277,7 +267,7 @@ if apply_addr_filter:
 TECHSUR_TENANT = "Techsur Solutions"
 if apply_tenant_filter:
     before = len(df)
-    df = df[df[selected_tenant_col].astype(str).str.strip() == TECHSUR_TENANT]
+    df = df[df[tenant_col].astype(str).str.strip() == TECHSUR_TENANT]
     after = len(df)
     excluded = before - after
     if excluded > 0:
