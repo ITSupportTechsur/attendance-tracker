@@ -15,6 +15,23 @@ except ImportError:
 st.set_page_config(page_title="Attendance Tracker", page_icon="🏢", layout="wide")
 
 OFFICE_ADDRESS = "11190 Sunrise Valley Drive"
+TECHSUR_DOMAIN = "techsur.solutions"
+
+
+def _name_key(name):
+    """
+    Normalize a display name to a 'first last' key for fuzzy matching.
+    - Drops single-letter middle initials  (e.g. 'GyVonda N McCain' → 'gyvonda mccain')
+    - Drops numeric suffixes               (e.g. 'Craig Park 2'     → 'craig park')
+    - Collapses duplicate tokens           (e.g. 'Tanksale Tanksale' → 'tanksale')
+    """
+    tokens = str(name).strip().lower().split()
+    filtered = [t for t in tokens if len(t) > 1 and not t.isdigit()]
+    # remove consecutive duplicates (e.g. "Tanksale Tanksale")
+    deduped = [filtered[i] for i in range(len(filtered)) if i == 0 or filtered[i] != filtered[i - 1]]
+    if len(deduped) >= 2:
+        return deduped[0] + " " + deduped[-1]
+    return " ".join(deduped) if deduped else name.strip().lower()
 
 
 st.title("🏢 Attendance Tracker")
@@ -55,13 +72,94 @@ def _sync_azure_ad():
             url = data.get("@odata.nextLink")
         rows = []
         for u in users:
+            upn  = (u.get("userPrincipalName") or "").lower()
+            mail = (u.get("mail") or "").lower()
+            # Skip guest / service accounts — keep only @techsur.solutions identities
+            if TECHSUR_DOMAIN not in upn and TECHSUR_DOMAIN not in mail:
+                continue
             mgr = u.get("manager")
             rows.append({
                 "Employee":      u.get("displayName", ""),
                 "Manager":       mgr.get("displayName", "No Manager") if mgr else "No Manager",
                 "Manager Email": mgr.get("mail", "") if mgr else "",
             })
-        st.session_state["manager_df"] = pd.DataFrame(rows)
+        mgr_df = pd.DataFrame(rows)
+        # Deduplicate by normalised name key — prefer rows that have a real manager
+        if not mgr_df.empty:
+            mgr_df["_key"] = mgr_df["Employee"].apply(_name_key)
+            mgr_df["_has_mgr"] = mgr_df["Manager"].apply(
+                lambda m: 0 if m not in ("No Manager", "") else 1
+            )
+            mgr_df = (
+                mgr_df.sort_values("_has_mgr")
+                      .drop_duplicates(subset=["_key"], keep="first")
+                      .drop(columns=["_key", "_has_mgr"])
+            )
+        st.session_state["manager_df"] = mgr_df
+
+        # ── SharePoint: fetch DataWatch assignees (reuse same token) ──────────
+        try:
+            site_resp = http_requests.get(
+                "https://graph.microsoft.com/v1.0/sites"
+                "/techsur.sharepoint.com:/sites/ITSupportOperations",
+                headers=headers,
+            )
+            site_data = site_resp.json()
+            if "error" in site_data:
+                st.session_state["sharepoint_error"] = site_data["error"].get("message", "SharePoint access denied")
+            else:
+                site_id = site_data["id"]
+                # Find Hardware Asset Library by display name
+                lists_resp = http_requests.get(
+                    f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists",
+                    headers=headers,
+                )
+                list_id = None
+                for lst in lists_resp.json().get("value", []):
+                    if "hardware asset" in lst.get("displayName", "").lower():
+                        list_id = lst["id"]
+                        break
+                if list_id:
+                    sp_url = (
+                        f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+                        f"/lists/{list_id}/items?$expand=fields&$top=999"
+                    )
+                    sp_items = []
+                    while sp_url:
+                        sp_resp = http_requests.get(sp_url, headers=headers)
+                        sp_data = sp_resp.json()
+                        if "error" in sp_data:
+                            st.session_state["sharepoint_error"] = sp_data["error"].get("message", "")
+                            break
+                        sp_items.extend(sp_data.get("value", []))
+                        sp_url = sp_data.get("@odata.nextLink")
+
+                    datawatch_names = set()
+                    for item in sp_items:
+                        fields = item.get("fields", {})
+                        # Only process DataWatch items
+                        if not any("datawatch" in str(v).lower() for v in fields.values()):
+                            continue
+                        # Extract assigned user — handle string, dict (person field), or list
+                        for fk, fv in fields.items():
+                            if "assign" not in fk.lower():
+                                continue
+                            if isinstance(fv, str) and fv.strip():
+                                datawatch_names.add(fv.strip())
+                            elif isinstance(fv, dict):
+                                name = fv.get("LookupValue") or fv.get("displayName") or ""
+                                if name:
+                                    datawatch_names.add(name.strip())
+                            elif isinstance(fv, list):
+                                for entry in fv:
+                                    if isinstance(entry, dict):
+                                        name = entry.get("LookupValue") or entry.get("displayName") or ""
+                                        if name:
+                                            datawatch_names.add(name.strip())
+                    st.session_state["datawatch_names"] = datawatch_names
+        except Exception:
+            pass
+
     except Exception:
         pass
 
@@ -218,10 +316,10 @@ manager_df = st.session_state.get("manager_df")
 has_managers = manager_df is not None and not manager_df.empty
 
 if has_managers:
-    # Fuzzy-friendly merge: lowercase strip both sides
+    # Normalised-name merge: drops middle initials, numeric suffixes, duplicate tokens
     mgr_lookup = manager_df.copy()
-    mgr_lookup["_key"] = mgr_lookup["Employee"].str.strip().str.lower()
-    unique_days["_key"] = unique_days["_name"].str.strip().str.lower()
+    mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
+    unique_days["_key"] = unique_days["_name"].apply(_name_key)
     unique_days = unique_days.merge(
         mgr_lookup[["_key", "Manager", "Manager Email"]],
         on="_key", how="left"
@@ -229,13 +327,42 @@ if has_managers:
     unique_days["Manager"] = unique_days["Manager"].fillna("Unknown / Not Mapped")
     unique_days["Manager Email"] = unique_days["Manager Email"].fillna("")
 
+# ─── Zero-attendance: DataWatch holders with no badge swipes in range ─────────
+_datawatch_names = st.session_state.get("datawatch_names", set())
+zero_df = pd.DataFrame()
+if _datawatch_names:
+    existing_keys = set(unique_days["_name"].apply(_name_key))
+    zero_rows = [
+        {"_name": n, "Days Present": 0, "Days Absent": total_weekdays,
+         "Total Weekdays": total_weekdays, "Attendance %": 0.0}
+        for n in sorted(_datawatch_names)
+        if n.strip() and _name_key(n) not in existing_keys
+    ]
+    if zero_rows:
+        zero_df = pd.DataFrame(zero_rows)
+        if has_managers:
+            mgr_lookup_z = manager_df.copy()
+            mgr_lookup_z["_key"] = mgr_lookup_z["Employee"].apply(_name_key)
+            zero_df["_key"] = zero_df["_name"].apply(_name_key)
+            zero_df = zero_df.merge(
+                mgr_lookup_z[["_key", "Manager", "Manager Email"]],
+                on="_key", how="left"
+            ).drop(columns=["_key"])
+            zero_df["Manager"] = zero_df["Manager"].fillna("Unknown / Not Mapped")
+            zero_df["Manager Email"] = zero_df["Manager Email"].fillna("")
+
 # ─── Summary Cards ────────────────────────────────────────────────────────────
+if sp_err := st.session_state.get("sharepoint_error"):
+    st.warning(f"SharePoint access error — 0 Attendance tab unavailable: {sp_err}\n\n"
+               "Make sure the Azure AD app has **Sites.Read.All** permission granted.")
+
 st.subheader("Summary")
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total Employees",   len(unique_days))
-m2.metric("Weekdays in Range", total_weekdays)
-m3.metric("Avg Attendance %",  f"{unique_days['Attendance %'].mean():.1f}%")
-m4.metric("Date Range",        f"{start_date} → {end_date}")
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Total Employees",    len(unique_days))
+m2.metric("Weekdays in Range",  total_weekdays)
+m3.metric("Avg Attendance %",   f"{unique_days['Attendance %'].mean():.1f}%")
+m4.metric("Date Range",         f"{start_date} → {end_date}")
+m5.metric("0 Attendance",       len(zero_df), help="DataWatch badge holders with no recorded swipes in this period")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 def color_pct(val):
@@ -291,12 +418,13 @@ def _team_sheet(df_team, writer, sheet_name):
     sheet_df.index += 1
     sheet_df.to_excel(writer, sheet_name=sheet_name, index=True, index_label="#")
 
-def make_manager_excel(data_df, single_manager=None):
+def make_manager_excel(data_df, single_manager=None, zero_df=None):
     """
     Full workbook layout (single_manager=None):
       Sheet 1 — All Employees  (everyone, sorted by manager then attendance)
       Sheets 2…N — one sheet per manager (alphabetical), employees sorted worst→best
-      Last sheet — No Manager  (if any employees have no manager assigned)
+      No Manager sheet — employees without a manager assigned
+      0 Attendance sheet — DataWatch holders with no badge swipes (if zero_df provided)
 
     When single_manager is provided, returns a single-sheet workbook for that manager.
     """
@@ -342,6 +470,10 @@ def make_manager_excel(data_df, single_manager=None):
                 if not no_mgr.empty:
                     _team_sheet(no_mgr, writer, "No Manager")
 
+            # ── 0 Attendance sheet ────────────────────────────────────────────
+            if zero_df is not None and not zero_df.empty:
+                _team_sheet(zero_df, writer, "0 Attendance")
+
     return output.getvalue()
 
 
@@ -349,6 +481,8 @@ def make_manager_excel(data_df, single_manager=None):
 view_options = ["Overall Report"]
 if has_managers:
     view_options += ["By Manager"]
+if not zero_df.empty:
+    view_options += ["0 Attendance"]
 
 view_mode = st.radio("View", view_options, horizontal=True)
 
@@ -470,6 +604,39 @@ elif view_mode == "By Manager":
 
         st.divider()
 
+# ─── 0 Attendance Report ──────────────────────────────────────────────────────
+elif view_mode == "0 Attendance":
+    st.subheader("Employees with 0 Attendance")
+    st.caption(
+        f"These employees have a **DataWatch badge** assigned in the Hardware Asset Library "
+        f"but **no recorded badge swipes** between {start_date} and {end_date}."
+    )
+
+    display_cols_z = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+    if "Manager" in zero_df.columns:
+        display_cols_z += ["Manager"]
+
+    display_zero = (
+        zero_df[display_cols_z]
+        .rename(columns={"_name": "Employee"})
+        .reset_index(drop=True)
+    )
+    display_zero.index += 1
+    st.dataframe(
+        display_zero.style.applymap(color_pct, subset=["Attendance %"]),
+        use_container_width=True,
+        height=min(80 + len(zero_df) * 38, 500),
+    )
+
+    zero_excel = make_manager_excel(unique_days, zero_df=zero_df)
+    st.download_button(
+        "⬇ Download Full Report with 0 Attendance sheet (Excel)",
+        zero_excel,
+        f"attendance_report_{start_date}_{end_date}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_zero_attendance",
+    )
+
 # ─── Individual Lookup ────────────────────────────────────────────────────────
 st.subheader("🔍 Look up a specific employee")
 names = sorted(unique_days["_name"].tolist())
@@ -492,9 +659,9 @@ if selected:
 
 # ─── Export ───────────────────────────────────────────────────────────────────
 st.subheader("Export")
-full_excel = make_manager_excel(unique_days)
+full_excel = make_manager_excel(unique_days, zero_df=zero_df if not zero_df.empty else None)
 st.download_button(
-    "⬇ Download Full Report (Excel — all employees + one sheet per manager)",
+    "⬇ Download Full Report (Excel — all employees + one sheet per manager + 0 Attendance)",
     full_excel,
     f"attendance_report_{start_date}_{end_date}.xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
