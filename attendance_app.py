@@ -129,18 +129,24 @@ def _sync_azure_ad():
                         sp_items.extend(sp_data.get("value", []))
                         sp_url = sp_data.get("@odata.nextLink")
 
+                    import re as _re
+                    _iso_date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}T")
                     datawatch_names = set()
                     for item in sp_items:
                         fields = item.get("fields", {})
                         # Only process DataWatch items
                         if not any("datawatch" in str(v).lower() for v in fields.values()):
                             continue
-                        # Extract assigned user — handle string, dict (person field), or list
+                        # Extract assigned user — skip date fields, skip ISO timestamp values
                         for fk, fv in fields.items():
                             if "assign" not in fk.lower():
                                 continue
-                            if isinstance(fv, str) and fv.strip():
-                                datawatch_names.add(fv.strip())
+                            if "date" in fk.lower():
+                                continue
+                            if isinstance(fv, str):
+                                v = fv.strip()
+                                if v and not _iso_date_re.match(v):
+                                    datawatch_names.add(v)
                             elif isinstance(fv, dict):
                                 name = fv.get("LookupValue") or fv.get("displayName") or ""
                                 if name:
