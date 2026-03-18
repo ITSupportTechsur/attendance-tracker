@@ -148,25 +148,16 @@ def _sync_azure_ad():
                         datawatch_item_count += 1
                         if datawatch_item_count == 1:
                             sample_fields = {k: v for k, v in fields.items() if not k.startswith("@")}
-                        for fk, fv in fields.items():
-                            if "assign" not in fk.lower():
-                                continue
-                            if "date" in fk.lower():
-                                continue
-                            if isinstance(fv, str):
-                                v = fv.strip()
-                                if v and not _iso_date_re.match(v):
-                                    datawatch_names.add(v)
-                            elif isinstance(fv, dict):
-                                name = fv.get("LookupValue") or fv.get("displayName") or ""
-                                if name:
-                                    datawatch_names.add(name.strip())
-                            elif isinstance(fv, list):
-                                for entry in fv:
-                                    if isinstance(entry, dict):
-                                        name = entry.get("LookupValue") or entry.get("displayName") or ""
-                                        if name:
-                                            datawatch_names.add(name.strip())
+                        # Assignee is stored in field_1
+                        name = fields.get("field_1", "")
+                        if isinstance(name, str):
+                            name = name.strip()
+                            if name and not _iso_date_re.match(name):
+                                datawatch_names.add(name)
+                        elif isinstance(name, dict):
+                            n = name.get("LookupValue") or name.get("displayName") or ""
+                            if n:
+                                datawatch_names.add(n.strip())
                     st.session_state["datawatch_names"] = datawatch_names
                     st.session_state["sharepoint_debug"] = {
                         "total_items": len(sp_items),
