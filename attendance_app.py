@@ -291,6 +291,23 @@ mask = (df["_date"] >= start_date) & (df["_date"] <= end_date)
 df_filtered = df[mask]
 df_weekdays = df_filtered[pd.to_datetime(df_filtered["_date"]).dt.dayofweek < 5]
 
+# ─── Exclude Names ────────────────────────────────────────────────────────────
+with st.expander("🚫 Exclude names from report", expanded=False):
+    excluded_input = st.text_area(
+        "One name per line (contractors, guests, non-employees, etc.)",
+        value="\n".join(st.session_state.get("excluded_names_list", [])),
+        height=150,
+        key="excluded_names_input",
+    )
+excluded_names_set = {n.strip().lower() for n in excluded_input.splitlines() if n.strip()}
+st.session_state["excluded_names_list"] = [n for n in excluded_input.splitlines() if n.strip()]
+if excluded_names_set:
+    before_excl = df_weekdays["_name"].nunique()
+    df_weekdays = df_weekdays[~df_weekdays["_name"].str.strip().str.lower().isin(excluded_names_set)]
+    removed = before_excl - df_weekdays["_name"].nunique()
+    if removed:
+        st.info(f"Excluded **{removed}** name(s) from the report.")
+
 # ─── Attendance Stats ─────────────────────────────────────────────────────────
 unique_days = (
     df_weekdays.drop_duplicates(subset=["_name", "_date"])
