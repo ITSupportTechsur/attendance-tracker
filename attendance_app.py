@@ -375,16 +375,32 @@ if has_managers:
     unique_days["Manager Email"] = unique_days["Manager Email"].fillna("")
 
 # ─── Zero-attendance: DataWatch holders with no badge swipes in range ─────────
+import difflib as _difflib
 _datawatch_names = st.session_state.get("datawatch_names", set())
 zero_df = pd.DataFrame()
 if _datawatch_names:
-    existing_keys = set(unique_days["_name"].apply(_name_key))
-    zero_rows = [
-        {"_name": n, "Days Present": 0, "Days Absent": total_weekdays,
-         "Total Weekdays": total_weekdays, "Attendance %": 0.0}
-        for n in sorted(_datawatch_names)
-        if n.strip() and _name_key(n) not in existing_keys
-    ]
+    existing_keys = list(unique_days["_name"].apply(_name_key))
+    existing_keys_set = set(existing_keys)
+    fuzzy_matched = {}  # sp_name -> badge_name for near-matches
+    zero_rows = []
+    for n in sorted(_datawatch_names):
+        if not n.strip():
+            continue
+        k = _name_key(n)
+        if k in existing_keys_set:
+            continue  # exact key match — person came in
+        # fuzzy match: check if any badge name is very similar
+        close = _difflib.get_close_matches(k, existing_keys, n=1, cutoff=0.82)
+        if close:
+            badge_name = unique_days[unique_days["_name"].apply(_name_key) == close[0]]["_name"].iloc[0]
+            fuzzy_matched[n] = badge_name
+            continue  # treat as same person — exclude from 0 attendance
+        zero_rows.append(
+            {"_name": n, "Days Present": 0, "Days Absent": total_weekdays,
+             "Total Weekdays": total_weekdays, "Attendance %": 0.0}
+        )
+    if fuzzy_matched:
+        st.session_state["fuzzy_matched"] = fuzzy_matched
     if zero_rows:
         zero_df = pd.DataFrame(zero_rows)
         if has_managers:
@@ -411,6 +427,12 @@ if sp_dbg := st.session_state.get("sharepoint_debug"):
         if sp_dbg["sample_fields"]:
             st.write("**Sample DataWatch item fields:**")
             st.json(sp_dbg["sample_fields"])
+
+if fuzzy := st.session_state.get("fuzzy_matched"):
+    with st.expander(f"⚠️ {len(fuzzy)} name(s) fuzzy-matched between SharePoint and badge log", expanded=False):
+        st.caption("These SharePoint names were close enough to a badge log name to be treated as the same person. Review for accuracy.")
+        for sp_name, badge_name in fuzzy.items():
+            st.write(f"SharePoint: **{sp_name}** → Badge log: **{badge_name}**")
 
 st.subheader("Summary")
 m1, m2, m3, m4, m5 = st.columns(5)
