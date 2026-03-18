@@ -512,7 +512,7 @@ elif view_mode == "By Manager":
     all_managers = sorted(unique_days["Manager"].dropna().unique().tolist())
 
     # ── Download all managers in one Excel ────────────────────────────────────
-    all_excel = make_manager_excel(unique_days)
+    all_excel = make_manager_excel(unique_days, zero_df=zero_df if not zero_df.empty else None)
     st.download_button(
         "⬇ Download All Manager Reports (Excel)",
         all_excel,
