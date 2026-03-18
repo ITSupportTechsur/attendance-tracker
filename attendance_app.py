@@ -17,6 +17,18 @@ st.set_page_config(page_title="Attendance Tracker", page_icon="🏢", layout="wi
 OFFICE_ADDRESS = "11190 Sunrise Valley Drive"
 TECHSUR_DOMAIN = "techsur.solutions"
 
+# Default names to exclude from all reports (contractors, guests, building badges)
+DEFAULT_EXCLUDE_NAMES = [
+    "Chief Engineer MASTER",
+    "Contractor SHred It",
+    "Harvard 2",
+    "Guest Fob 1",
+    "Guest Fob 2",
+    "Ramona Shannon Harvard Maintenance",
+    "Cristian Mata",
+    "Bravo Handy Man",
+]
+
 
 def _name_key(name):
     """
@@ -354,7 +366,7 @@ df_weekdays = df_filtered[pd.to_datetime(df_filtered["_date"]).dt.dayofweek < 5]
 with st.expander("🚫 Exclude names from report", expanded=False):
     excluded_input = st.text_area(
         "One name per line (contractors, guests, non-employees, etc.)",
-        value="\n".join(st.session_state.get("excluded_names_list", [])),
+        value="\n".join(st.session_state.get("excluded_names_list", DEFAULT_EXCLUDE_NAMES)),
         height=150,
         key="excluded_names_input",
     )
