@@ -190,6 +190,7 @@ firstname_col = find_col(df_raw, ["first"])
 lastname_col  = find_col(df_raw, ["last"])
 name_col      = find_col(df_raw, ["name", "employee", "person", "user"])
 address_col   = find_col(df_raw, ["address", "from", "location", "site", "building", "door", "reader"])
+tenant_col    = find_col(df_raw, ["tenant", "organization", "organisation", "company", "domain"])
 
 # ─── Column Mapping UI ───────────────────────────────────────────────────────
 st.subheader("Column Mapping")
@@ -229,6 +230,18 @@ with col4:
     )
     apply_addr_filter = selected_addr_col != "(None — no address filter)"
 
+    tenant_options = ["(None — no tenant filter)"] + all_cols
+    tenant_default_idx = (
+        tenant_options.index(tenant_col) if tenant_col and tenant_col in tenant_options else 0
+    )
+    selected_tenant_col = st.selectbox(
+        "Tenant / Organization column",
+        tenant_options,
+        index=tenant_default_idx,
+        help="Only rows where this column equals 'Techsur Solutions' will be counted.",
+    )
+    apply_tenant_filter = selected_tenant_col != "(None — no tenant filter)"
+
 # ─── Build working dataframe ─────────────────────────────────────────────────
 df = df_raw.copy()
 df["_dt"] = pd.to_datetime(df[datetime_col], errors="coerce")
@@ -257,6 +270,25 @@ if apply_addr_filter:
         st.error(
             f"No records match address '{OFFICE_ADDRESS}'. "
             "Check that you selected the right column, or disable the address filter."
+        )
+        st.stop()
+
+# ─── Tenant Filter ────────────────────────────────────────────────────────────
+TECHSUR_TENANT = "Techsur Solutions"
+if apply_tenant_filter:
+    before = len(df)
+    df = df[df[selected_tenant_col].astype(str).str.strip() == TECHSUR_TENANT]
+    after = len(df)
+    excluded = before - after
+    if excluded > 0:
+        st.info(
+            f"Tenant filter active — excluded **{excluded:,}** rows not from "
+            f"*{TECHSUR_TENANT}* (kept {after:,} of {before:,})."
+        )
+    if df.empty:
+        st.error(
+            f"No records match tenant '{TECHSUR_TENANT}'. "
+            "Check that you selected the right column, or disable the tenant filter."
         )
         st.stop()
 
