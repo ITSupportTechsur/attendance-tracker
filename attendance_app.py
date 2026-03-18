@@ -109,12 +109,19 @@ def _sync_azure_ad():
                     f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists",
                     headers=headers,
                 )
+                all_lists = lists_resp.json().get("value", [])
+                st.session_state["sharepoint_debug_lists"] = [l.get("displayName","") for l in all_lists]
                 list_id = None
-                for lst in lists_resp.json().get("value", []):
+                for lst in all_lists:
                     if "hardware asset" in lst.get("displayName", "").lower():
                         list_id = lst["id"]
                         break
-                if list_id:
+                if not list_id:
+                    st.session_state["sharepoint_error"] = (
+                        f"Hardware Asset Library not found. Lists found: "
+                        + ", ".join(l.get("displayName","") for l in all_lists)
+                    )
+                else:
                     sp_url = (
                         f"https://graph.microsoft.com/v1.0/sites/{site_id}"
                         f"/lists/{list_id}/items?$expand=fields&$top=999"
@@ -132,12 +139,15 @@ def _sync_azure_ad():
                     import re as _re
                     _iso_date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}T")
                     datawatch_names = set()
+                    datawatch_item_count = 0
+                    sample_fields = {}
                     for item in sp_items:
                         fields = item.get("fields", {})
-                        # Only process DataWatch items
                         if not any("datawatch" in str(v).lower() for v in fields.values()):
                             continue
-                        # Extract assigned user — skip date fields, skip ISO timestamp values
+                        datawatch_item_count += 1
+                        if datawatch_item_count == 1:
+                            sample_fields = {k: v for k, v in fields.items() if not k.startswith("@")}
                         for fk, fv in fields.items():
                             if "assign" not in fk.lower():
                                 continue
@@ -158,8 +168,14 @@ def _sync_azure_ad():
                                         if name:
                                             datawatch_names.add(name.strip())
                     st.session_state["datawatch_names"] = datawatch_names
-        except Exception:
-            pass
+                    st.session_state["sharepoint_debug"] = {
+                        "total_items": len(sp_items),
+                        "datawatch_items": datawatch_item_count,
+                        "names_found": len(datawatch_names),
+                        "sample_fields": sample_fields,
+                    }
+        except Exception as e:
+            st.session_state["sharepoint_error"] = f"Exception: {e}"
 
     except Exception:
         pass
@@ -395,6 +411,15 @@ if _datawatch_names:
 if sp_err := st.session_state.get("sharepoint_error"):
     st.warning(f"SharePoint access error — 0 Attendance tab unavailable: {sp_err}\n\n"
                "Make sure the Azure AD app has **Sites.Read.All** permission granted.")
+
+if sp_dbg := st.session_state.get("sharepoint_debug"):
+    with st.expander("🔍 SharePoint debug info", expanded=False):
+        st.write(f"**Total list items fetched:** {sp_dbg['total_items']}")
+        st.write(f"**DataWatch items found:** {sp_dbg['datawatch_items']}")
+        st.write(f"**Assignee names extracted:** {sp_dbg['names_found']}")
+        if sp_dbg["sample_fields"]:
+            st.write("**Sample DataWatch item fields:**")
+            st.json(sp_dbg["sample_fields"])
 
 st.subheader("Summary")
 m1, m2, m3, m4, m5 = st.columns(5)
