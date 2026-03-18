@@ -34,6 +34,30 @@ def _name_key(name):
     return " ".join(deduped) if deduped else name.strip().lower()
 
 
+# Words that indicate a SharePoint entry is a badge-status note, not a real employee name
+_BADGE_JUNK_WORDS = {"lost", "spare", "inventory", "handy"}
+
+def _is_junk_badge_name(name):
+    """Return True if the name contains badge-status keywords (not a real employee)."""
+    return any(t in _BADGE_JUNK_WORDS for t in name.lower().split())
+
+
+def _last_first_initial_match(k, candidates):
+    """
+    Secondary name match: same last name + same first initial.
+    Catches common nickname/full-name pairs like Jim/James, Bill/William, etc.
+    Returns the first matching candidate key, or None.
+    """
+    parts_k = k.split()
+    if len(parts_k) < 2:
+        return None
+    for c in candidates:
+        parts_c = c.split()
+        if len(parts_c) >= 2 and parts_k[-1] == parts_c[-1] and parts_k[0][0] == parts_c[0][0]:
+            return c
+    return None
+
+
 st.title("🏢 Attendance Tracker")
 st.caption(f"Only counts badge events at **{OFFICE_ADDRESS}**. Weekdays only.")
 
@@ -386,11 +410,19 @@ if _datawatch_names:
     for n in sorted(_datawatch_names):
         if not n.strip():
             continue
+        # Skip names explicitly excluded by the user or flagged as junk badge entries
+        if n.strip().lower() in excluded_names_set or _is_junk_badge_name(n):
+            continue
         k = _name_key(n)
         if k in existing_keys_set:
             continue  # exact key match — person came in
-        # fuzzy match: check if any badge name is very similar
+        # Primary: fuzzy match (handles minor spelling differences)
         close = _difflib.get_close_matches(k, existing_keys, n=1, cutoff=0.82)
+        if not close:
+            # Secondary: same last name + same first initial (catches Jim/James, Bill/William, etc.)
+            m = _last_first_initial_match(k, existing_keys)
+            if m:
+                close = [m]
         if close:
             badge_name = unique_days[unique_days["_name"].apply(_name_key) == close[0]]["_name"].iloc[0]
             fuzzy_matched[n] = badge_name
