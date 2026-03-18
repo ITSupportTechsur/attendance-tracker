@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 from datetime import timedelta, date
 import plotly.graph_objects as go
 
@@ -15,20 +16,6 @@ st.set_page_config(page_title="Attendance Tracker", page_icon="🏢", layout="wi
 
 OFFICE_ADDRESS = "11190 Sunrise Valley Drive"
 
-# ─── Password Gate ────────────────────────────────────────────────────────────
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    st.title("🏢 Attendance Tracker")
-    pwd = st.text_input("Enter password", type="password")
-    if st.button("Sign in"):
-        if pwd == "TechSur!23$":
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
-    st.stop()
 
 st.title("🏢 Attendance Tracker")
 st.caption(f"Only counts badge events at **{OFFICE_ADDRESS}**. Weekdays only.")
@@ -285,6 +272,79 @@ def make_bar_chart(df_in, title=""):
     )
     return fig
 
+# ─── Excel Export Helper ──────────────────────────────────────────────────────
+def _safe_sheet_name(name):
+    """Truncate to 31 chars and strip characters Excel forbids in sheet names."""
+    return (name[:31]
+            .replace("/", "-").replace("\\", "-")
+            .replace("*", "").replace("[", "").replace("]", "")
+            .replace(":", "").replace("?", ""))
+
+def _team_sheet(df_team, writer, sheet_name):
+    """Write a sorted team DataFrame to an Excel sheet."""
+    sheet_df = (
+        df_team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]]
+        .sort_values("Attendance %", ascending=True)   # at-risk first
+        .rename(columns={"_name": "Employee"})
+        .reset_index(drop=True)
+    )
+    sheet_df.index += 1
+    sheet_df.to_excel(writer, sheet_name=sheet_name, index=True, index_label="#")
+
+def make_manager_excel(data_df, single_manager=None):
+    """
+    Full workbook layout (single_manager=None):
+      Sheet 1 — All Employees  (everyone, sorted by manager then attendance)
+      Sheets 2…N — one sheet per manager (alphabetical), employees sorted worst→best
+      Last sheet — No Manager  (if any employees have no manager assigned)
+
+    When single_manager is provided, returns a single-sheet workbook for that manager.
+    """
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+
+        if single_manager:
+            team = data_df[data_df["Manager"] == single_manager].copy()
+            _team_sheet(team, writer, _safe_sheet_name(single_manager))
+
+        else:
+            # ── Sheet 1: All Employees ────────────────────────────────────────
+            cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+            if "Manager" in data_df.columns:
+                cols += ["Manager"]
+            summary = (
+                data_df[cols]
+                .sort_values(
+                    (["Manager", "Attendance %"] if "Manager" in cols else ["Attendance %"]),
+                    ascending=True,
+                )
+                .rename(columns={"_name": "Employee"})
+                .reset_index(drop=True)
+            )
+            summary.index += 1
+            summary.to_excel(writer, sheet_name="All Employees", index=True, index_label="#")
+
+            # ── One sheet per manager (alphabetical) ─────────────────────────
+            if "Manager" in data_df.columns:
+                named_managers = sorted([
+                    m for m in data_df["Manager"].dropna().unique()
+                    if m not in ("No Manager", "Unknown / Not Mapped")
+                ])
+                for mgr in named_managers:
+                    team = data_df[data_df["Manager"] == mgr].copy()
+                    if team.empty:
+                        continue
+                    _team_sheet(team, writer, _safe_sheet_name(mgr))
+
+                # ── No Manager sheet ──────────────────────────────────────────
+                no_mgr = data_df[data_df["Manager"].isin(["No Manager", "Unknown / Not Mapped", None]) |
+                                 data_df["Manager"].isna()].copy()
+                if not no_mgr.empty:
+                    _team_sheet(no_mgr, writer, "No Manager")
+
+    return output.getvalue()
+
+
 # ─── View Mode Toggle ─────────────────────────────────────────────────────────
 view_options = ["Overall Report"]
 if has_managers:
@@ -317,11 +377,27 @@ if view_mode == "Overall Report":
 elif view_mode == "By Manager":
     all_managers = sorted(unique_days["Manager"].dropna().unique().tolist())
 
+    # ── Download all managers in one Excel ────────────────────────────────────
+    all_excel = make_manager_excel(unique_days)
+    st.download_button(
+        "⬇ Download All Manager Reports (Excel)",
+        all_excel,
+        f"all_manager_reports_{start_date}_{end_date}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_all_managers",
+        help="One sheet per manager + a summary sheet — ready to split and send",
+    )
+    st.divider()
+
     jump_to = st.selectbox("Jump to a manager", ["— Show all —"] + all_managers)
     managers_to_show = all_managers if jump_to == "— Show all —" else [jump_to]
 
     for mgr in managers_to_show:
-        team = unique_days[unique_days["Manager"] == mgr].copy()
+        team = (
+            unique_days[unique_days["Manager"] == mgr]
+            .sort_values("Attendance %", ascending=True)   # at-risk employees first
+            .copy()
+        )
         if team.empty:
             continue
 
@@ -383,11 +459,12 @@ elif view_mode == "By Manager":
 
         # ── Download ──────────────────────────────────────────────────────────
         safe_name = mgr.replace(" ", "_").replace("/", "-")
+        mgr_excel = make_manager_excel(unique_days, single_manager=mgr)
         st.download_button(
-            f"⬇ Download {mgr}'s report (CSV)",
-            display_team.to_csv(index=False).encode("utf-8"),
-            f"attendance_{safe_name}_{start_date}_{end_date}.csv",
-            "text/csv",
+            f"⬇ Download {mgr}'s report (Excel)",
+            mgr_excel,
+            f"attendance_{safe_name}_{start_date}_{end_date}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"dl_{mgr}",
         )
 
@@ -415,11 +492,11 @@ if selected:
 
 # ─── Export ───────────────────────────────────────────────────────────────────
 st.subheader("Export")
-export_cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
-rename_export = {"_name": "Employee"}
-if has_managers:
-    export_cols += ["Manager", "Manager Email"]
-
-export_df = unique_days[export_cols].rename(columns=rename_export)
-csv = export_df.to_csv(index=False).encode("utf-8")
-st.download_button("⬇ Download Full CSV", csv, "attendance_report.csv", "text/csv")
+full_excel = make_manager_excel(unique_days)
+st.download_button(
+    "⬇ Download Full Report (Excel — all employees + one sheet per manager)",
+    full_excel,
+    f"attendance_report_{start_date}_{end_date}.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    key="dl_full_excel",
+)
