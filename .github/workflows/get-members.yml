@@ -1,0 +1,28 @@
+name: Get Chat Members
+on:
+  workflow_dispatch:
+jobs:
+  get-members:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install msal requests
+      - name: Fetch chat members
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: python /tmp/get_members.py || python - <<'PYEOF'
+import os, msal, requests
+TENANT_ID=os.environ["AZURE_TENANT_ID"]; CLIENT_ID=os.environ["AZURE_CLIENT_ID"]; CLIENT_SECRET=os.environ["AZURE_CLIENT_SECRET"]
+CHAT_ID="19:b98f42b8806d40d79914e59fa66953de@thread.v2"
+app=msal.ConfidentialClientApplication(CLIENT_ID,authority=f"https://login.microsoftonline.com/{TENANT_ID}",client_credential=CLIENT_SECRET)
+token=app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])["access_token"]
+resp=requests.get(f"https://graph.microsoft.com/v1.0/chats/{CHAT_ID}/members",headers={"Authorization":f"Bearer {token}"})
+members=resp.json().get("value",[])
+print(f"Total members: {len(members)}")
+[print(f"  {m.get('displayName','?')}  —  {m.get('email','')}") for m in members]
+PYEOF
