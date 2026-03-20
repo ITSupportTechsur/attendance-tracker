@@ -767,22 +767,42 @@ def post_to_teams_webhook(
     at_risk    = int((unique_days["Attendance %"] < 80).sum())
     zero_count = len(zero_df)
 
-    sp_line = f"\n\n📎 [View full report in SharePoint]({file_url})" if file_url else ""
+    facts = [
+        {"title": "Period",               "value": f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"},
+        {"title": "Working days",         "value": str(total_weekdays)},
+        {"title": "Employees tracked",    "value": str(total_emp)},
+        {"title": "Average attendance",   "value": f"{avg_pct:.1f}%"},
+        {"title": "At risk (<80%)",       "value": str(at_risk)},
+        {"title": "0 attendance",         "value": str(zero_count)},
+    ]
 
-    text = (
-        f"**Weekly Attendance Report — "
-        f"{start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}**\n\n"
-        f"| | |\n|---|---|\n"
-        f"| **Period** | {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')} |\n"
-        f"| **Working days** | {total_weekdays} |\n"
-        f"| **Employees tracked** | {total_emp} |\n"
-        f"| **Average attendance** | {avg_pct:.1f}% |\n"
-        f"| **At risk (<80%)** | {at_risk} |\n"
-        f"| **0 attendance** | {zero_count} |"
-        f"{sp_line}"
-    )
+    body = [
+        {
+            "type": "TextBlock",
+            "size": "Large",
+            "weight": "Bolder",
+            "text": f"Weekly Attendance Report — {start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}",
+            "wrap": True,
+        },
+        {"type": "FactSet", "facts": facts},
+    ]
 
-    payload = {"title": "TechSur Attendance Tracker", "text": text}
+    if file_url:
+        body.append({
+            "type": "ActionSet",
+            "actions": [{
+                "type": "Action.OpenUrl",
+                "title": "View full report in SharePoint",
+                "url": file_url,
+            }],
+        })
+
+    payload = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body,
+    }
     try:
         resp = http_requests.post(TEAMS_WEBHOOK_URL, json=payload, timeout=30)
         if resp.status_code in (200, 202):
