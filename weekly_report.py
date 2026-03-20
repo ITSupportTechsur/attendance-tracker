@@ -17,6 +17,7 @@ Required environment variables (set as GitHub Secrets):
   AZURE_CLIENT_SECRET
   REPORT_FROM_EMAIL     mailbox to send from  e.g. Joe.ghaleb@techsur.solutions
   REPORT_TO_EMAILS      comma-separated recipients e.g. joe@techsur.solutions,manager@techsur.solutions
+  TEAMS_WEBHOOK_URL     (optional) Power Automate webhook URL for Teams channel post
 """
 
 import os
@@ -53,6 +54,7 @@ AZURE_CLIENT_ID     = os.environ["AZURE_CLIENT_ID"]
 AZURE_CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
 REPORT_FROM_EMAIL   = os.environ["REPORT_FROM_EMAIL"]   # mailbox to send from
 REPORT_TO_EMAILS    = os.environ["REPORT_TO_EMAILS"]    # comma-separated recipients
+TEAMS_WEBHOOK_URL   = os.environ.get("TEAMS_WEBHOOK_URL", "")  # optional
 
 SHAREPOINT_SITE_PATH = "techsur.sharepoint.com:/sites/ITSupportOperations"
 UPLOAD_FOLDER        = "Attendance Reports"   # folder inside site's document library
@@ -746,6 +748,51 @@ def send_email_report(
         )
 
 
+# ── Step 9: Post summary to Teams channel (via Power Automate webhook) ─────────
+
+def post_to_teams_webhook(
+    unique_days: pd.DataFrame,
+    zero_df: pd.DataFrame,
+    total_weekdays: int,
+    start: date,
+    end: date,
+    file_url: str,
+) -> None:
+    if not TEAMS_WEBHOOK_URL:
+        log.info("TEAMS_WEBHOOK_URL not set — skipping Teams post")
+        return
+
+    total_emp  = len(unique_days)
+    avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
+    at_risk    = int((unique_days["Attendance %"] < 80).sum())
+    zero_count = len(zero_df)
+
+    sp_line = f"\n\n📎 [View full report in SharePoint]({file_url})" if file_url else ""
+
+    text = (
+        f"**Weekly Attendance Report — "
+        f"{start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}**\n\n"
+        f"| | |\n|---|---|\n"
+        f"| **Period** | {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')} |\n"
+        f"| **Working days** | {total_weekdays} |\n"
+        f"| **Employees tracked** | {total_emp} |\n"
+        f"| **Average attendance** | {avg_pct:.1f}% |\n"
+        f"| **At risk (<80%)** | {at_risk} |\n"
+        f"| **0 attendance** | {zero_count} |"
+        f"{sp_line}"
+    )
+
+    payload = {"title": "TechSur Attendance Tracker", "text": text}
+    try:
+        resp = http_requests.post(TEAMS_WEBHOOK_URL, json=payload, timeout=30)
+        if resp.status_code in (200, 202):
+            log.info("Teams channel post sent successfully")
+        else:
+            log.warning(f"Teams webhook post failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as exc:
+        log.warning(f"Teams webhook post error: {exc}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -782,6 +829,11 @@ def main():
         token, REPORT_FROM_EMAIL, REPORT_TO_EMAILS,
         unique_days, zero_df, total_weekdays,
         start, end, file_url, filename, report_bytes,
+    )
+
+    # 9. Post summary to Teams channel
+    post_to_teams_webhook(
+        unique_days, zero_df, total_weekdays, start, end, file_url
     )
 
     log.info("=== Done ===")

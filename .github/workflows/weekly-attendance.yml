@@ -33,4 +33,5 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
           REPORT_TO_EMAILS:    ${{ secrets.REPORT_TO_EMAILS }}
+          TEAMS_WEBHOOK_URL:   ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: python weekly_report.py
