@@ -189,13 +189,13 @@ def download_badge_excel(start: date, end: date) -> bytes:
         # ── Set date range ────────────────────────────────────────────────────
         begin_field = page.locator("input#Begin, input[name='Begin']").first
         begin_field.wait_for(state="visible", timeout=20_000)
-        begin_field.triple_click()
+        begin_field.click(click_count=3)
         begin_field.fill(start_str)
         begin_field.press("Escape")
         page.wait_for_timeout(500)
 
         end_field = page.locator("input#End, input[name='End']").first
-        end_field.triple_click()
+        end_field.click(click_count=3)
         end_field.fill(end_str)
         end_field.press("Escape")
         page.wait_for_timeout(500)
