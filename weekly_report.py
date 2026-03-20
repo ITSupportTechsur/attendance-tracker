@@ -7,15 +7,16 @@ Runs every Monday via GitHub Actions.
   3. Processes attendance using the same logic as attendance_app.py
   4. Generates the full multi-sheet Excel report
   5. Uploads the report to SharePoint IT Support Operations
-  6. Posts a summary message + file link to the Teams "TechSur @ Resource Managers" group chat
+  6. Emails the report (summary + Excel attachment) to the configured recipients
 
 Required environment variables (set as GitHub Secrets):
-  DATAWATCH_USERNAME   e.g. A.Admin5
+  DATAWATCH_USERNAME    e.g. A.Admin5
   DATAWATCH_PASSWORD
   AZURE_TENANT_ID
   AZURE_CLIENT_ID
   AZURE_CLIENT_SECRET
-  TEAMS_CHAT_ID        (see README section below for how to find this)
+  REPORT_FROM_EMAIL     mailbox to send from  e.g. Joe.ghaleb@techsur.solutions
+  REPORT_TO_EMAILS      comma-separated recipients e.g. joe@techsur.solutions,manager@techsur.solutions
 """
 
 import os
@@ -50,7 +51,8 @@ DATAWATCH_PASSWORD  = os.environ["DATAWATCH_PASSWORD"]
 AZURE_TENANT_ID     = os.environ["AZURE_TENANT_ID"]
 AZURE_CLIENT_ID     = os.environ["AZURE_CLIENT_ID"]
 AZURE_CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
-TEAMS_CHAT_ID       = os.environ["TEAMS_CHAT_ID"]
+REPORT_FROM_EMAIL   = os.environ["REPORT_FROM_EMAIL"]   # mailbox to send from
+REPORT_TO_EMAILS    = os.environ["REPORT_TO_EMAILS"]    # comma-separated recipients
 
 SHAREPOINT_SITE_PATH = "techsur.sharepoint.com:/sites/ITSupportOperations"
 UPLOAD_FOLDER        = "Attendance Reports"   # folder inside site's document library
@@ -642,11 +644,12 @@ def upload_to_sharepoint(token: str, site_id: str, filename: str, file_bytes: by
     return web_url
 
 
-# ── Step 8: Post message to Teams chat ────────────────────────────────────────
+# ── Step 8: Send email report ──────────────────────────────────────────────────
 
-def post_to_teams(
+def send_email_report(
     token: str,
-    chat_id: str,
+    from_email: str,
+    to_emails: str,
     unique_days: pd.DataFrame,
     zero_df: pd.DataFrame,
     total_weekdays: int,
@@ -654,54 +657,92 @@ def post_to_teams(
     end: date,
     file_url: str,
     filename: str,
+    report_bytes: bytes,
 ) -> None:
     """
-    Posts an HTML summary message + file link to the Teams group chat.
-    Requires Chat.ReadWrite.All on the Azure AD app.
+    Sends the attendance report by email with the Excel file attached.
+    Uses Microsoft Graph sendMail — requires Mail.Send application permission.
+    from_email   : mailbox to send from (must exist in the tenant)
+    to_emails    : comma-separated list of recipient addresses
     """
+    import base64
+
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
     at_risk    = int((unique_days["Attendance %"] < 80).sum())
     zero_count = len(zero_df)
 
-    file_line = (
-        f'<br/>📎 <a href="{file_url}">{filename}</a>'
+    sharepoint_line = (
+        f'<p>📎 Full report also saved to SharePoint: '
+        f'<a href="{file_url}">{filename}</a></p>'
         if file_url else ""
     )
 
-    html_body = (
-        f"📊 <b>Weekly Attendance Report</b> — "
-        f"{start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}<br/><br/>"
-        f"Please find attached the attendance tracker results.<br/><br/>"
-        f"• <b>Total employees tracked:</b> {total_emp}<br/>"
-        f"• <b>Average attendance:</b> {avg_pct:.1f}%<br/>"
-        f"• <b>At risk (&lt;80%):</b> {at_risk}<br/>"
-        f"• <b>0 attendance:</b> {zero_count}<br/>"
-        f"• <b>Working days in period:</b> {total_weekdays}"
-        f"{file_line}"
-    )
+    html_body = f"""
+<p>Please find attached the weekly attendance tracker results.</p>
+
+<table style="border-collapse:collapse; font-family:Arial,sans-serif; font-size:14px;">
+  <tr><td style="padding:4px 12px 4px 0;"><b>Period</b></td>
+      <td>{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0;"><b>Working days</b></td>
+      <td>{total_weekdays}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0;"><b>Employees tracked</b></td>
+      <td>{total_emp}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0;"><b>Average attendance</b></td>
+      <td>{avg_pct:.1f}%</td></tr>
+  <tr><td style="padding:4px 12px 4px 0;"><b>At risk (&lt;80%)</b></td>
+      <td>{at_risk}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0;"><b>0 attendance</b></td>
+      <td>{zero_count}</td></tr>
+</table>
+
+{sharepoint_line}
+
+<p style="color:#888;font-size:12px;">Sent automatically by the TechSur Attendance Tracker.</p>
+"""
+
+    recipients = [
+        {"emailAddress": {"address": addr.strip()}}
+        for addr in to_emails.split(",") if addr.strip()
+    ]
+
+    payload = {
+        "message": {
+            "subject": (
+                f"Weekly Attendance Report — "
+                f"{start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}"
+            ),
+            "body": {"contentType": "HTML", "content": html_body},
+            "toRecipients": recipients,
+            "attachments": [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": filename,
+                    "contentType": (
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
+                    "contentBytes": base64.b64encode(report_bytes).decode(),
+                }
+            ],
+        },
+        "saveToSentItems": False,
+    }
 
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "body": {
-            "contentType": "html",
-            "content": html_body,
-        }
-    }
-    # Use beta endpoint — required for app-permission posting to group chats
     resp = http_requests.post(
-        f"https://graph.microsoft.com/beta/chats/{chat_id}/messages",
+        f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail",
         headers=headers,
         json=payload,
     )
-    if resp.status_code in (200, 201):
-        log.info("Message posted to Teams successfully")
+    if resp.status_code == 202:
+        log.info(f"Email sent from {from_email} to {to_emails}")
     else:
         raise RuntimeError(
-            f"Teams post failed ({resp.status_code}): {resp.text[:300]}"
+            f"Email send failed ({resp.status_code}): {resp.text[:300]}"
         )
 
 
@@ -736,11 +777,11 @@ def main():
     # 7. Upload to SharePoint
     file_url = upload_to_sharepoint(token, site_id, filename, report_bytes) if site_id else ""
 
-    # 8. Post to Teams
-    post_to_teams(
-        token, TEAMS_CHAT_ID,
+    # 8. Email report
+    send_email_report(
+        token, REPORT_FROM_EMAIL, REPORT_TO_EMAILS,
         unique_days, zero_df, total_weekdays,
-        start, end, file_url, filename,
+        start, end, file_url, filename, report_bytes,
     )
 
     log.info("=== Done ===")

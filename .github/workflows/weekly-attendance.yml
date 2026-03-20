@@ -31,5 +31,6 @@ jobs:
           AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          TEAMS_CHAT_ID:       ${{ secrets.TEAMS_CHAT_ID }}
+          REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
+          REPORT_TO_EMAILS:    ${{ secrets.REPORT_TO_EMAILS }}
         run: python weekly_report.py
