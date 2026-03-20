@@ -184,33 +184,91 @@ def download_badge_excel(start: date, end: date) -> bytes:
 
         # ── Navigate to History ───────────────────────────────────────────────
         page.goto(f"{DATAWATCH_BASE_URL}/History/Index", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
 
-        # ── Set date range ────────────────────────────────────────────────────
-        begin_field = page.locator("input#Begin, input[name='Begin']").first
-        begin_field.wait_for(state="visible", timeout=20_000)
-        begin_field.click(click_count=3)
-        begin_field.fill(start_str)
-        begin_field.press("Escape")
-        page.wait_for_timeout(500)
+        # Debug: log all input fields visible on the page
+        inputs = page.evaluate("""
+            () => Array.from(document.querySelectorAll('input')).map(
+                el => ({id: el.id, name: el.name, type: el.type, value: el.value})
+            )
+        """)
+        log.info(f"History page inputs: {inputs}")
+        page.screenshot(path="/tmp/d3000_history.png", full_page=True)
 
-        end_field = page.locator("input#End, input[name='End']").first
-        end_field.click(click_count=3)
-        end_field.fill(end_str)
-        end_field.press("Escape")
-        page.wait_for_timeout(500)
+        # ── Set date range via JavaScript (bypasses calendar picker) ──────────
+        # Find the Begin/End inputs dynamically from what's on the page
+        page.evaluate(f"""
+            (function() {{
+                // Try multiple strategies to find date inputs
+                var inputs = document.querySelectorAll('input[type="text"], input[type="date"], input:not([type])');
+                var dateInputs = Array.from(inputs).filter(function(el) {{
+                    var id = (el.id || '').toLowerCase();
+                    var name = (el.name || '').toLowerCase();
+                    return id.includes('begin') || id.includes('start') ||
+                           name.includes('begin') || name.includes('start');
+                }});
+                if (dateInputs.length > 0) {{
+                    dateInputs[0].value = '{start_str}';
+                    dateInputs[0].dispatchEvent(new Event('change', {{bubbles: true}}));
+                    dateInputs[0].dispatchEvent(new Event('input', {{bubbles: true}}));
+                }}
+
+                var endInputs = Array.from(inputs).filter(function(el) {{
+                    var id = (el.id || '').toLowerCase();
+                    var name = (el.name || '').toLowerCase();
+                    return id.includes('end') || name.includes('end');
+                }});
+                if (endInputs.length > 0) {{
+                    endInputs[0].value = '{end_str}';
+                    endInputs[0].dispatchEvent(new Event('change', {{bubbles: true}}));
+                    endInputs[0].dispatchEvent(new Event('input', {{bubbles: true}}));
+                }}
+            }})();
+        """)
+        page.wait_for_timeout(1000)
+
+        # Verify the values were set
+        set_values = page.evaluate("""
+            () => Array.from(document.querySelectorAll('input')).map(
+                el => ({id: el.id, name: el.name, value: el.value})
+            ).filter(el => el.value)
+        """)
+        log.info(f"Input values after JS set: {set_values}")
         log.info(f"Date range set: {start_str} → {end_str}")
 
         # ── Click "Search By Tenant" ──────────────────────────────────────────
+        # Find the search button dynamically
+        search_btn = page.evaluate("""
+            () => {
+                var btns = Array.from(document.querySelectorAll('input[type="submit"], button'));
+                var match = btns.find(b =>
+                    (b.value || b.textContent || '').toLowerCase().includes('search')
+                );
+                return match ? (match.value || match.textContent) : null;
+            }
+        """)
+        log.info(f"Search button found: {search_btn!r}")
+
         page.click(
             "input[value='Search By Tenant'], "
-            "button:has-text('Search By Tenant')"
+            "button:has-text('Search By Tenant'), "
+            "input[type='submit']"
         )
         page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(4000)
         log.info("Search complete — downloading Export to Excel")
 
         # ── Export to Excel ───────────────────────────────────────────────────
+        # Find the Export to Excel link
+        export_link = page.evaluate("""
+            () => {
+                var links = Array.from(document.querySelectorAll('a'));
+                var match = links.find(a => a.textContent.toLowerCase().includes('export to excel'));
+                return match ? match.href : null;
+            }
+        """)
+        log.info(f"Export link found: {export_link!r}")
+
         with page.expect_download(timeout=60_000) as dl_info:
             page.click("a:has-text('Export to Excel')")
         download = dl_info.value
