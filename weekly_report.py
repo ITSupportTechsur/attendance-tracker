@@ -128,47 +128,91 @@ def download_badge_excel(start: date, end: date) -> bytes:
     end_str   = end.strftime(_DATE_FMT)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
         ctx     = browser.new_context(accept_downloads=True)
         page    = ctx.new_page()
+        page.set_default_timeout(60_000)   # 60 s for all actions
 
-        # ── Login step 1: enter username ──────────────────────────────────────
-        page.goto(DATAWATCH_BASE_URL, wait_until="networkidle")
-        page.fill('input[name="UserName"]', DATAWATCH_USERNAME)
-        page.click('input[value="Next"]')
-        page.wait_for_load_state("networkidle")
+        try:
+            # ── Login step 1: load page and enter username ────────────────────
+            log.info(f"Navigating to {DATAWATCH_BASE_URL}")
+            page.goto(DATAWATCH_BASE_URL, wait_until="domcontentloaded", timeout=60_000)
+            page.wait_for_timeout(2000)   # let JS render the form
 
-        # ── Login step 2: enter password ──────────────────────────────────────
-        page.fill('input[name="Password"]', DATAWATCH_PASSWORD)
-        page.click('input[value="Log On"]')
-        page.wait_for_load_state("networkidle")
+            log.info(f"Page title: {page.title()!r}  URL: {page.url!r}")
+
+            # Try multiple selector patterns for the username field
+            username_selector = (
+                "input#UserName, "
+                "input[name='UserName'], "
+                "input[name='username'], "
+                "input[type='text']"
+            )
+            page.wait_for_selector(username_selector, timeout=30_000)
+            page.fill(username_selector, DATAWATCH_USERNAME)
+            log.info("Username entered")
+
+            # Click Next — try value attr or visible button text
+            page.click(
+                "input[value='Next'], "
+                "button:has-text('Next'), "
+                "input[type='submit']"
+            )
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(1500)
+
+            # ── Login step 2: enter password ──────────────────────────────────
+            log.info(f"Password page URL: {page.url!r}")
+            page.wait_for_selector("input[name='Password'], input[type='password']", timeout=30_000)
+            page.fill("input[name='Password'], input[type='password']", DATAWATCH_PASSWORD)
+            page.click(
+                "input[value='Log On'], "
+                "button:has-text('Log On'), "
+                "input[type='submit']"
+            )
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(2000)
+            log.info(f"After login URL: {page.url!r}")
+
+        except Exception as exc:
+            # Save a screenshot so we can see what the browser saw
+            page.screenshot(path="/tmp/d3000_login_debug.png", full_page=True)
+            log.error(f"Login failed — screenshot saved to /tmp/d3000_login_debug.png")
+            raise RuntimeError(f"D3000 login failed: {exc}") from exc
+
         log.info("Logged in to D3000 DirectAccess")
 
         # ── Navigate to History ───────────────────────────────────────────────
-        page.goto(f"{DATAWATCH_BASE_URL}/History/Index", wait_until="networkidle")
+        page.goto(f"{DATAWATCH_BASE_URL}/History/Index", wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
 
         # ── Set date range ────────────────────────────────────────────────────
-        # Begin field
-        begin_field = page.locator("#Begin, input[name='Begin']").first
+        begin_field = page.locator("input#Begin, input[name='Begin']").first
+        begin_field.wait_for(state="visible", timeout=20_000)
         begin_field.triple_click()
         begin_field.fill(start_str)
-        begin_field.press("Escape")   # close any calendar picker
+        begin_field.press("Escape")
+        page.wait_for_timeout(500)
 
-        # End field
-        end_field = page.locator("#End, input[name='End']").first
+        end_field = page.locator("input#End, input[name='End']").first
         end_field.triple_click()
         end_field.fill(end_str)
         end_field.press("Escape")
+        page.wait_for_timeout(500)
+        log.info(f"Date range set: {start_str} → {end_str}")
 
         # ── Click "Search By Tenant" ──────────────────────────────────────────
-        page.click('input[value="Search By Tenant"], button:text("Search By Tenant")')
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(2000)   # let results fully render
+        page.click(
+            "input[value='Search By Tenant'], "
+            "button:has-text('Search By Tenant')"
+        )
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(3000)
         log.info("Search complete — downloading Export to Excel")
 
         # ── Export to Excel ───────────────────────────────────────────────────
         with page.expect_download(timeout=60_000) as dl_info:
-            page.click('a:text("Export to Excel")')
+            page.click("a:has-text('Export to Excel')")
         download = dl_info.value
         file_path = download.path()
         data = Path(file_path).read_bytes()
