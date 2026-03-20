@@ -341,20 +341,24 @@ def fetch_manager_df(token: str) -> pd.DataFrame:
     return mgr_df
 
 
-# ── Step 4: Fetch SharePoint DataWatch assignees ──────────────────────────────
+# ── Step 4: Fetch SharePoint site ID + DataWatch assignees ────────────────────
 
-def fetch_datawatch_names(token: str) -> set:
+def get_sharepoint_site_id(token: str) -> str | None:
+    """Resolve the SharePoint site path to a stable site ID."""
     headers = {"Authorization": f"Bearer {token}"}
-
-    site_resp = http_requests.get(
+    resp = http_requests.get(
         f"https://graph.microsoft.com/v1.0/sites/{SHAREPOINT_SITE_PATH}",
         headers=headers,
     )
-    site_data = site_resp.json()
-    if "error" in site_data:
-        log.warning(f"SharePoint site error: {site_data['error']}")
-        return set()
-    site_id = site_data["id"]
+    data = resp.json()
+    if "error" in data:
+        log.warning(f"SharePoint site error: {data['error']}")
+        return None
+    return data["id"]
+
+
+def fetch_datawatch_names(token: str, site_id: str) -> set:
+    headers = {"Authorization": f"Bearer {token}"}
 
     lists_resp = http_requests.get(
         f"https://graph.microsoft.com/v1.0/sites/{site_id}/lists",
@@ -612,19 +616,21 @@ def generate_report_excel(
 
 # ── Step 7: Upload file to SharePoint ─────────────────────────────────────────
 
-def upload_to_sharepoint(token: str, filename: str, file_bytes: bytes) -> str:
+def upload_to_sharepoint(token: str, site_id: str, filename: str, file_bytes: bytes) -> str:
     """
     Uploads the report to the SharePoint site's 'Attendance Reports' folder.
-    Returns the web URL of the uploaded file.
+    Uses the resolved site_id (GUID) so the URL is unambiguous.
+    Returns the web URL of the uploaded file, or "" on failure.
     Requires Sites.ReadWrite.All on the Azure AD app.
     """
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
+    # Correct format: sites/{site-id}/drive/root:/{folder}/{file}:/content
     upload_url = (
-        f"https://graph.microsoft.com/v1.0/sites/{SHAREPOINT_SITE_PATH}"
-        f":/drive/root:/{UPLOAD_FOLDER}/{filename}:/content"
+        f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+        f"/drive/root:/{UPLOAD_FOLDER}/{filename}:/content"
     )
     resp = http_requests.put(upload_url, headers=headers, data=file_bytes)
     if resp.status_code not in (200, 201):
@@ -685,8 +691,9 @@ def post_to_teams(
             "content": html_body,
         }
     }
+    # Use beta endpoint — required for app-permission posting to group chats
     resp = http_requests.post(
-        f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
+        f"https://graph.microsoft.com/beta/chats/{chat_id}/messages",
         headers=headers,
         json=payload,
     )
@@ -713,8 +720,9 @@ def main():
     # 3. Azure AD users + managers
     manager_df = fetch_manager_df(token)
 
-    # 4. SharePoint DataWatch assignees (for 0-attendance detection)
-    datawatch_names = fetch_datawatch_names(token)
+    # 4. SharePoint site ID + DataWatch assignees
+    site_id         = get_sharepoint_site_id(token)
+    datawatch_names = fetch_datawatch_names(token, site_id) if site_id else set()
 
     # 5. Process attendance
     unique_days, zero_df, total_weekdays = process_attendance(
@@ -726,7 +734,7 @@ def main():
     report_bytes = generate_report_excel(unique_days, zero_df, start, end)
 
     # 7. Upload to SharePoint
-    file_url = upload_to_sharepoint(token, filename, report_bytes)
+    file_url = upload_to_sharepoint(token, site_id, filename, report_bytes) if site_id else ""
 
     # 8. Post to Teams
     post_to_teams(
