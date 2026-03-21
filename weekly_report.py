@@ -1095,9 +1095,11 @@ def generate_report_html(
 def upload_to_sharepoint(
     token: str, site_id: str, filename: str, file_bytes: bytes,
     content_type: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    week_folder: str = "",
 ) -> str:
     """
     Uploads the report to the SharePoint site's 'Attendance Reports' folder.
+    If week_folder is given, files are placed inside a subfolder named after the audit week.
     Uses the resolved site_id (GUID) so the URL is unambiguous.
     Returns the web URL of the uploaded file, or "" on failure.
     Requires Sites.ReadWrite.All on the Azure AD app.
@@ -1106,10 +1108,10 @@ def upload_to_sharepoint(
         "Authorization": f"Bearer {token}",
         "Content-Type": content_type,
     }
-    # Correct format: sites/{site-id}/drive/root:/{folder}/{file}:/content
+    subfolder_path = f"{UPLOAD_FOLDER}/{week_folder}" if week_folder else UPLOAD_FOLDER
     upload_url = (
         f"https://graph.microsoft.com/v1.0/sites/{site_id}"
-        f"/drive/root:/{UPLOAD_FOLDER}/{filename}:/content"
+        f"/drive/root:/{subfolder_path}/{filename}:/content"
     )
     resp = http_requests.put(upload_url, headers=headers, data=file_bytes)
     if resp.status_code not in (200, 201):
@@ -1334,10 +1336,11 @@ def main():
     html_filename = f"Attendance_Report_{start}_{end}.html"
     html_bytes    = generate_report_html(unique_days, zero_df, start, end, total_weekdays)
 
-    # 7. Upload to SharePoint (Excel + HTML)
-    file_url = upload_to_sharepoint(token, site_id, filename, report_bytes) if site_id else ""
+    # 7. Upload to SharePoint (Excel + HTML) — each week gets its own subfolder
+    week_folder = f"{start} to {end}"
+    file_url = upload_to_sharepoint(token, site_id, filename, report_bytes, week_folder=week_folder) if site_id else ""
     html_url = (
-        upload_to_sharepoint(token, site_id, html_filename, html_bytes, content_type="text/html")
+        upload_to_sharepoint(token, site_id, html_filename, html_bytes, content_type="text/html", week_folder=week_folder)
         if site_id else ""
     )
 
