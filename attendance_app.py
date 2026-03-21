@@ -27,6 +27,7 @@ DEFAULT_EXCLUDE_NAMES = [
     "Ramona Shannon Harvard Maintenance",
     "Cristian Mata",
     "Bravo Handy Man",
+    "Rupinder Yadav",       # removed from attendance tracker per management
 ]
 
 

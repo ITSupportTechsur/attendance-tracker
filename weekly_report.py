@@ -70,6 +70,13 @@ DEFAULT_EXCLUDE_NAMES = {
     "ramona shannon harvard maintenance",
     "cristian mata",
     "bravo handy man",
+    "rupinder yadav",       # removed from system per management
+}
+
+# Employees who are intentionally without a manager (e.g. company owner).
+# They still appear in the report but are not flagged under "No Manager".
+OWNER_EXCEPTIONS = {
+    "amit yadav",           # company owner — no manager by design
 }
 
 _BADGE_JUNK_WORDS = {"lost", "spare", "inventory", "handy"}
@@ -510,6 +517,14 @@ def process_attendance(
         ).drop(columns=["_key"])
         unique_days["Manager"]       = unique_days["Manager"].fillna("Unknown / Not Mapped")
         unique_days["Manager Email"] = unique_days["Manager Email"].fillna("")
+
+        # Owner exceptions: reclassify so they don't appear in "No Manager" section
+        def _reclassify_owner(row):
+            if (row["Manager"] in ("No Manager", "Unknown / Not Mapped")
+                    and _name_key(row["_name"]) in OWNER_EXCEPTIONS):
+                return "Owner / Executive"
+            return row["Manager"]
+        unique_days["Manager"] = unique_days.apply(_reclassify_owner, axis=1)
 
     # Zero-attendance: DataWatch holders with no badge swipes
     zero_rows = []
