@@ -294,6 +294,12 @@ else:
 
 df = df[df["_name"] != ""]
 
+# Merge multiple fobs: "Craig Park 2" → "Craig Park" (strip trailing digit)
+df["_name"] = df["_name"].apply(
+    lambda n: " ".join(n.split()[:-1]) if n.split() and n.split()[-1].isdigit() else n
+)
+df = df[df["_name"] != ""]
+
 # ─── Address Filter ───────────────────────────────────────────────────────────
 if apply_addr_filter:
     before = len(df)
