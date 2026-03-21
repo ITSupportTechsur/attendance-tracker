@@ -24,9 +24,11 @@ import os
 import io
 import re
 import sys
+import base64
 import difflib
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -806,6 +808,260 @@ def generate_report_excel(
     return output.getvalue()
 
 
+# ── Step 6b: Generate HTML report ─────────────────────────────────────────────
+
+def _html_pct_badge(val: float) -> str:
+    try:
+        v = float(val)
+        if v == 0:    cls, label = "badge-red",    f"{v:.0f}%"
+        elif v < 80:  cls, label = "badge-orange",  f"{v:.0f}%"
+        elif v < 100: cls, label = "badge-yellow",  f"{v:.0f}%"
+        else:         cls, label = "badge-green",   f"{v:.0f}%"
+        return f'<span class="badge {cls}">{label}</span>'
+    except (TypeError, ValueError):
+        return escape(str(val))
+
+
+def _html_table(df: pd.DataFrame, show_manager: bool = True) -> str:
+    has_mgr = show_manager and "Manager" in df.columns
+    mgr_th  = "<th style='text-align:left'>Manager</th>" if has_mgr else ""
+    rows = ""
+    for i, (_, row) in enumerate(df.iterrows(), 1):
+        mgr_cell = (
+            f'<td class="muted">{escape(str(row.get("Manager", "")))}</td>'
+            if has_mgr else ""
+        )
+        rows += (
+            f"<tr>"
+            f'<td class="num light">{i}</td>'
+            f'<td class="emp">{escape(str(row["_name"]))}</td>'
+            f"{mgr_cell}"
+            f'<td class="num">{int(row["Days Present"])}</td>'
+            f'<td class="num">{int(row["Days Absent"])}</td>'
+            f'<td class="num light">{int(row["Total Weekdays"])}</td>'
+            f'<td class="center">{_html_pct_badge(row["Attendance %"])}</td>'
+            f"</tr>"
+        )
+    return (
+        f'<table><thead><tr>'
+        f'<th style="width:36px">#</th><th style="text-align:left">Employee</th>'
+        f"{mgr_th}"
+        f'<th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table>'
+    )
+
+
+def generate_report_html(
+    unique_days: pd.DataFrame,
+    zero_df: pd.DataFrame,
+    start: date,
+    end: date,
+    total_weekdays: int,
+) -> bytes:
+    period       = f"{start.strftime('%B %d')} \u2013 {end.strftime('%B %d, %Y')}"
+    generated_on = datetime.now().strftime("%B %d, %Y")
+
+    total_emp  = len(unique_days)
+    avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
+    at_risk    = int((unique_days["Attendance %"] < 80).sum())
+    zero_count = len(zero_df)
+
+    # Logo (base64-embedded if file exists)
+    logo_path = Path(__file__).parent / "techsur_logo.png"
+    if logo_path.exists():
+        logo_html = (
+            f'<img src="data:image/png;base64,'
+            f'{base64.b64encode(logo_path.read_bytes()).decode()}" '
+            f'alt="TechSur" style="height:52px;display:block;">'
+        )
+    else:
+        logo_html = (
+            '<div style="display:flex;flex-direction:column;align-items:flex-start;">'
+            '<div style="font-size:28px;font-weight:900;color:#F0B429;letter-spacing:2px;'
+            'font-family:Arial,sans-serif;line-height:1;">TECHSUR</div>'
+            '<div style="font-size:8px;color:rgba(255,255,255,0.55);letter-spacing:2.5px;'
+            'font-weight:600;text-transform:uppercase;margin-top:3px;">PASSION MEETS TECHNOLOGY</div>'
+            '</div>'
+        )
+
+    # All Employees table
+    sort_cols  = ["Manager", "Attendance %"] if "Manager" in unique_days.columns else ["Attendance %"]
+    all_sorted = unique_days.sort_values(sort_cols, ascending=True)
+    all_table  = _html_table(all_sorted, show_manager=True)
+
+    # By-Manager collapsible sections
+    mgr_sections = ""
+    if "Manager" in unique_days.columns:
+        named = sorted([
+            m for m in unique_days["Manager"].dropna().unique()
+            if m not in ("No Manager", "Unknown / Not Mapped", "")
+        ])
+        for mgr in named:
+            team   = unique_days[unique_days["Manager"] == mgr].copy()
+            avg    = team["Attendance %"].mean()
+            n      = len(team)
+            risk_n = int((team["Attendance %"] < 80).sum())
+            tbl    = _html_table(team.sort_values("Attendance %"), show_manager=False)
+            risk_pill = f'<span class="risk-pill">{risk_n} at risk</span>' if risk_n > 0 else ""
+            mgr_sections += (
+                f'<details class="mgr-block">'
+                f'<summary class="mgr-bar">'
+                f'<span class="mgr-left"><span class="chevron">&#9656;</span>'
+                f'<span class="mgr-name-title">{escape(mgr)}</span></span>'
+                f'<span class="mgr-meta">{n} employee{"s" if n!=1 else ""}'
+                f'&nbsp;&nbsp;&bull;&nbsp;&nbsp;Avg: {_html_pct_badge(avg)}&nbsp;&nbsp;{risk_pill}'
+                f'</span></summary>'
+                f'<div class="mgr-table-wrap">{tbl}</div></details>'
+            )
+        no_mgr = unique_days[
+            unique_days["Manager"].isin(["No Manager", "Unknown / Not Mapped"])
+        ].copy()
+        if not no_mgr.empty:
+            tbl = _html_table(no_mgr.sort_values("Attendance %"), show_manager=False)
+            mgr_sections += (
+                f'<details class="mgr-block">'
+                f'<summary class="mgr-bar" style="border-left-color:#555;">'
+                f'<span class="mgr-left"><span class="chevron">&#9656;</span>'
+                f'<span class="mgr-name-title" style="color:#aaa;">No Manager Assigned</span></span>'
+                f'<span class="mgr-meta">{len(no_mgr)} employee{"s" if len(no_mgr)!=1 else ""}</span>'
+                f'</summary>'
+                f'<div class="mgr-table-wrap">{tbl}</div></details>'
+            )
+
+    # 0 Attendance section
+    zero_section = ""
+    if not zero_df.empty:
+        zero_tbl = _html_table(zero_df.sort_values("_name"), show_manager=True)
+        zero_section = (
+            f'<div class="section zero-section">'
+            f'<div class="section-header">'
+            f'<h2 style="color:#C0392B;">&#9888; Zero Attendance</h2>'
+            f'<span class="pill" style="background:#FDDEDE;color:#A52020;">{len(zero_df)}</span>'
+            f'</div>'
+            f'<p class="note">These employees have a DataWatch badge assigned but no recorded'
+            f' office entries for this period.</p>'
+            f'{zero_tbl}</div>'
+        )
+
+    # Stat cards
+    avg_color  = "#27AE60" if avg_pct >= 80 else "#E67E22" if avg_pct >= 60 else "#E74C3C"
+    risk_color = "#E74C3C" if at_risk    > 0 else "#27AE60"
+    zero_color = "#E74C3C" if zero_count > 0 else "#27AE60"
+    cards = (
+        f'<div class="card"><div class="stat">{total_emp}</div>'
+        f'<div class="stat-label">Employees Tracked</div></div>'
+        f'<div class="card"><div class="stat" style="color:{avg_color}">{avg_pct:.1f}%</div>'
+        f'<div class="stat-label">Avg Attendance</div></div>'
+        f'<div class="card"><div class="stat" style="color:{risk_color}">{at_risk}</div>'
+        f'<div class="stat-label">At Risk (&lt;80%)</div></div>'
+        f'<div class="card"><div class="stat" style="color:{zero_color}">{zero_count}</div>'
+        f'<div class="stat-label">Zero Attendance</div></div>'
+    )
+
+    css = """
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;background:#F0F2F5;color:#2D2D2D;padding:28px 16px;font-size:14px;line-height:1.5}
+    .report{max-width:980px;margin:0 auto;background:#fff;border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.09);overflow:hidden}
+    .header{background:#1A1A1C;padding:24px 40px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #F0B429}
+    .header-right{text-align:right}
+    .header-right .report-title{font-size:19px;font-weight:700;color:#fff;margin-bottom:4px}
+    .header-right .report-meta{font-size:12px;color:rgba(255,255,255,.5)}
+    .header-right .report-meta strong{color:#F0B429;font-weight:600}
+    .cards{display:flex;background:#FAFAF8;border-bottom:1px solid #ECECEC}
+    .card{flex:1;padding:20px 16px;text-align:center;border-right:1px solid #ECECEC}
+    .card:last-child{border-right:none}
+    .stat{font-size:32px;font-weight:700;color:#2D2D2D;line-height:1;margin-bottom:5px}
+    .stat-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:#9E9E9E}
+    .section{padding:26px 40px 34px;border-bottom:1px solid #ECECEC}
+    .section:last-child{border-bottom:none}
+    .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .section-header h2{font-size:15px;font-weight:700;color:#2D2D2D;display:flex;align-items:center;gap:10px}
+    .section-header h2::before{content:'';display:inline-block;width:4px;height:18px;border-radius:2px;background:#F0B429}
+    .pill{background:#FFF3CD;color:#856404;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px}
+    .note{font-size:12px;color:#9E9E9E;margin-bottom:12px}
+    .toggle-btn{background:none;border:1.5px solid #CCAB44;color:#CCAB44;font-size:11px;font-weight:700;padding:5px 14px;border-radius:20px;cursor:pointer;letter-spacing:.5px;transition:background .15s,color .15s}
+    .toggle-btn:hover{background:#F0B429;border-color:#F0B429;color:#fff}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    thead th{background:#3D3A35;color:#fff;padding:10px 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;text-align:center;white-space:nowrap}
+    thead th[style*="left"]{text-align:left}
+    tbody tr:nth-child(even) td{background:#FAFAF8}
+    tbody tr:hover td{background:#FFF8E8!important}
+    tbody td{padding:9px 14px;border-bottom:1px solid #F0EFED;vertical-align:middle}
+    td.num{text-align:center;font-variant-numeric:tabular-nums;color:#4A4A4A}
+    td.center{text-align:center}
+    td.emp{font-weight:600;color:#2D2D2D}
+    td.muted{color:#888;font-size:12px}
+    td.light{color:#ABABAB}
+    .badge{display:inline-block;padding:3px 12px;border-radius:12px;font-size:12px;font-weight:700;min-width:50px;text-align:center}
+    .badge-green{background:#D4EDDA;color:#1A6B35}
+    .badge-yellow{background:#FFF3CD;color:#856404}
+    .badge-orange{background:#FFE8CC;color:#924800}
+    .badge-red{background:#FDDEDE;color:#A52020}
+    .by-manager-grid{display:flex;flex-direction:column;gap:10px}
+    details.mgr-block{border-radius:7px;overflow:hidden;border:1px solid #E4E0DA}
+    details.mgr-block>summary{list-style:none;cursor:pointer;background:#FBF8F2;border-left:4px solid #F0B429;padding:12px 18px;display:flex;align-items:center;justify-content:space-between;user-select:none;transition:background .15s}
+    details.mgr-block>summary::-webkit-details-marker{display:none}
+    details.mgr-block>summary:hover{background:#FFF4DC}
+    .mgr-left{display:flex;align-items:center;gap:10px}
+    .mgr-name-title{font-size:13px;font-weight:700;color:#2D2D2D}
+    .chevron{color:#BBAC8A;font-size:11px;display:inline-block;transition:transform .2s ease}
+    details[open]>summary .chevron{transform:rotate(90deg)}
+    .mgr-meta{font-size:12px;color:#888;display:flex;align-items:center;gap:8px}
+    .risk-pill{background:#FDDEDE;color:#A52020;font-size:11px;font-weight:700;padding:2px 9px;border-radius:10px;border:1px solid #F0B0B0}
+    .mgr-table-wrap{animation:slideDown .18s ease}
+    @keyframes slideDown{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+    .zero-section thead th{background:#7B2121;color:#fff}
+    .zero-section .section-header h2::before{background:#C0392B}
+    .footer{background:#1A1A1C;padding:13px 40px;display:flex;align-items:center;justify-content:space-between}
+    .footer-logo{font-size:13px;font-weight:900;color:#F0B429;letter-spacing:1px}
+    .footer-note{font-size:11px;color:rgba(255,255,255,.3)}
+    """
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TechSur Attendance Report \u2013 {period}</title>
+<style>{css}</style></head>
+<body><div class="report">
+  <div class="header">
+    <div class="header-left">{logo_html}</div>
+    <div class="header-right">
+      <div class="report-title">Weekly Attendance Report</div>
+      <div class="report-meta"><strong>{period}</strong> &nbsp;&bull;&nbsp; {total_weekdays} working day{"s" if total_weekdays!=1 else ""}</div>
+    </div>
+  </div>
+  <div class="cards">{cards}</div>
+  <div class="section">
+    <div class="section-header"><h2>All Employees</h2><span class="pill">{total_emp} total</span></div>
+    {all_table}
+  </div>
+  <div class="section">
+    <div class="section-header">
+      <h2>By Manager</h2>
+      <button class="toggle-btn" onclick="toggleAll(this)">Expand All</button>
+    </div>
+    <div class="by-manager-grid" id="mgr-grid">{mgr_sections}</div>
+  </div>
+  {zero_section}
+  <div class="footer">
+    <div class="footer-logo">TECHSUR</div>
+    <div class="footer-note">Confidential &bull; For internal use only &bull; {generated_on}</div>
+  </div>
+</div>
+<script>
+  function toggleAll(btn){{
+    var blocks=document.querySelectorAll('#mgr-grid details');
+    var anyCollapsed=Array.from(blocks).some(function(d){{return !d.open;}});
+    blocks.forEach(function(d){{d.open=anyCollapsed;}});
+    btn.textContent=anyCollapsed?'Collapse All':'Expand All';
+  }}
+</script>
+</body></html>"""
+
+    log.info("HTML report generated")
+    return html.encode("utf-8")
+
+
 # ── Step 7: Upload file to SharePoint ─────────────────────────────────────────
 
 def upload_to_sharepoint(token: str, site_id: str, filename: str, file_bytes: bytes) -> str:
@@ -848,14 +1104,15 @@ def send_email_report(
     file_url: str,
     filename: str,
     report_bytes: bytes,
+    html_bytes: bytes | None = None,
+    html_filename: str = "",
 ) -> None:
     """
-    Sends the attendance report by email with the Excel file attached.
+    Sends the attendance report by email with Excel + HTML attachments.
     Uses Microsoft Graph sendMail — requires Mail.Send application permission.
     from_email   : mailbox to send from (must exist in the tenant)
     to_emails    : comma-separated list of recipient addresses
     """
-    import base64
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
@@ -913,7 +1170,13 @@ def send_email_report(
                         ".spreadsheetml.sheet"
                     ),
                     "contentBytes": base64.b64encode(report_bytes).decode(),
-                }
+                },
+                *([{
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": html_filename,
+                    "contentType": "text/html",
+                    "contentBytes": base64.b64encode(html_bytes).decode(),
+                }] if html_bytes and html_filename else []),
             ],
         },
         "saveToSentItems": False,
@@ -1029,14 +1292,19 @@ def main():
     filename     = f"Attendance_Report_{start}_{end}.xlsx"
     report_bytes = generate_report_excel(unique_days, zero_df, start, end)
 
+    # 6b. Generate HTML report
+    html_filename = f"Attendance_Report_{start}_{end}.html"
+    html_bytes    = generate_report_html(unique_days, zero_df, start, end, total_weekdays)
+
     # 7. Upload to SharePoint
     file_url = upload_to_sharepoint(token, site_id, filename, report_bytes) if site_id else ""
 
-    # 8. Email report
+    # 8. Email report (Excel + HTML attached)
     send_email_report(
         token, REPORT_FROM_EMAIL, REPORT_TO_EMAILS,
         unique_days, zero_df, total_weekdays,
         start, end, file_url, filename, report_bytes,
+        html_bytes=html_bytes, html_filename=html_filename,
     )
 
     # 9. Post summary to Teams channel
