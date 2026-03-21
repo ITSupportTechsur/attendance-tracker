@@ -583,10 +583,11 @@ def make_manager_excel(data_df, single_manager=None, zero_df=None):
 
             # ── One sheet per manager (alphabetical) ─────────────────────────
             if "Manager" in data_df.columns:
-                named_managers = sorted([
-                    m for m in data_df["Manager"].dropna().unique()
-                    if m not in ("No Manager", "Unknown / Not Mapped")
-                ])
+                named_managers = sorted(
+                    [m for m in data_df["Manager"].dropna().unique()
+                     if m not in ("No Manager", "Unknown / Not Mapped")],
+                    key=lambda m: (0 if m == "Owner / Executive" else 1, m)
+                )
                 for mgr in named_managers:
                     team = data_df[data_df["Manager"] == mgr].copy()
                     if team.empty:
@@ -638,7 +639,10 @@ if view_mode == "Overall Report":
 
 # ─── By Manager Report ────────────────────────────────────────────────────────
 elif view_mode == "By Manager":
-    all_managers = sorted(unique_days["Manager"].dropna().unique().tolist())
+    all_managers = sorted(
+        unique_days["Manager"].dropna().unique().tolist(),
+        key=lambda m: (0 if m == "Owner / Executive" else 1, m)
+    )
 
     # ── Download all managers in one Excel ────────────────────────────────────
     all_excel = make_manager_excel(unique_days, zero_df=zero_df if not zero_df.empty else None)

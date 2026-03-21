@@ -796,10 +796,11 @@ def generate_report_excel(
 
         # One sheet per manager
         if "Manager" in unique_days.columns:
-            named_managers = sorted([
-                m for m in unique_days["Manager"].dropna().unique()
-                if m not in ("No Manager", "Unknown / Not Mapped")
-            ])
+            named_managers = sorted(
+                [m for m in unique_days["Manager"].dropna().unique()
+                 if m not in ("No Manager", "Unknown / Not Mapped")],
+                key=lambda m: (0 if m == "Owner / Executive" else 1, m)
+            )
             for mgr in named_managers:
                 team = unique_days[unique_days["Manager"] == mgr].copy()
                 if not team.empty:
@@ -918,10 +919,11 @@ def generate_report_html(
     # By-Manager collapsible sections
     mgr_sections = ""
     if "Manager" in unique_days.columns:
-        named = sorted([
-            m for m in unique_days["Manager"].dropna().unique()
-            if m not in ("No Manager", "Unknown / Not Mapped", "")
-        ])
+        named = sorted(
+            [m for m in unique_days["Manager"].dropna().unique()
+             if m not in ("No Manager", "Unknown / Not Mapped", "")],
+            key=lambda m: (0 if m == "Owner / Executive" else 1, m)
+        )
         for mgr in named:
             team   = unique_days[unique_days["Manager"] == mgr].copy()
             avg    = team["Attendance %"].mean()
