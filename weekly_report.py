@@ -82,10 +82,15 @@ _DATE_FMT = "%#m/%#d/%Y" if sys.platform == "win32" else "%-m/%-d/%Y"
 # ── Date helpers ───────────────────────────────────────────────────────────────
 
 def get_last_week_range():
-    """Return (last_monday, last_friday) as date objects."""
-    today       = date.today()          # This script runs on Monday
-    last_monday = today - timedelta(days=7)
-    last_friday = last_monday + timedelta(days=4)
+    """Return (last_monday, last_friday) of the most recently completed work week.
+    Works correctly whether triggered on Monday (scheduled) or any other day (manual)."""
+    today = date.today()
+    # weekday(): Mon=0 Tue=1 Wed=2 Thu=3 Fri=4 Sat=5 Sun=6
+    days_since_friday = (today.weekday() - 4) % 7  # 0=Fri,1=Sat,2=Sun,3=Mon,...
+    if days_since_friday == 0:          # today is Friday — week not done yet
+        days_since_friday = 7
+    last_friday = today - timedelta(days=days_since_friday)
+    last_monday = last_friday - timedelta(days=4)
     return last_monday, last_friday
 
 
