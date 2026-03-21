@@ -1090,7 +1090,10 @@ def generate_report_html(
 
 # ── Step 7: Upload file to SharePoint ─────────────────────────────────────────
 
-def upload_to_sharepoint(token: str, site_id: str, filename: str, file_bytes: bytes) -> str:
+def upload_to_sharepoint(
+    token: str, site_id: str, filename: str, file_bytes: bytes,
+    content_type: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+) -> str:
     """
     Uploads the report to the SharePoint site's 'Attendance Reports' folder.
     Uses the resolved site_id (GUID) so the URL is unambiguous.
@@ -1099,7 +1102,7 @@ def upload_to_sharepoint(token: str, site_id: str, filename: str, file_bytes: by
     """
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": content_type,
     }
     # Correct format: sites/{site-id}/drive/root:/{folder}/{file}:/content
     upload_url = (
@@ -1234,6 +1237,7 @@ def post_to_teams_webhook(
     start: date,
     end: date,
     file_url: str,
+    html_url: str = "",
 ) -> None:
     if not TEAMS_WEBHOOK_URL:
         log.info("TEAMS_WEBHOOK_URL not set — skipping Teams post")
@@ -1264,15 +1268,21 @@ def post_to_teams_webhook(
         {"type": "FactSet", "facts": facts},
     ]
 
-    if file_url:
-        body.append({
-            "type": "ActionSet",
-            "actions": [{
-                "type": "Action.OpenUrl",
-                "title": "View full report in SharePoint",
-                "url": file_url,
-            }],
+    actions = []
+    if html_url:
+        actions.append({
+            "type": "Action.OpenUrl",
+            "title": "Open HTML Report",
+            "url": html_url,
         })
+    if file_url:
+        actions.append({
+            "type": "Action.OpenUrl",
+            "title": "Download Excel Report",
+            "url": file_url,
+        })
+    if actions:
+        body.append({"type": "ActionSet", "actions": actions})
 
     payload = {
         "type": "AdaptiveCard",
@@ -1322,8 +1332,12 @@ def main():
     html_filename = f"Attendance_Report_{start}_{end}.html"
     html_bytes    = generate_report_html(unique_days, zero_df, start, end, total_weekdays)
 
-    # 7. Upload to SharePoint
+    # 7. Upload to SharePoint (Excel + HTML)
     file_url = upload_to_sharepoint(token, site_id, filename, report_bytes) if site_id else ""
+    html_url = (
+        upload_to_sharepoint(token, site_id, html_filename, html_bytes, content_type="text/html")
+        if site_id else ""
+    )
 
     # 8. Email report (Excel + HTML attached)
     send_email_report(
@@ -1335,7 +1349,7 @@ def main():
 
     # 9. Post summary to Teams channel
     post_to_teams_webhook(
-        unique_days, zero_df, total_weekdays, start, end, file_url
+        unique_days, zero_df, total_weekdays, start, end, file_url, html_url
     )
 
     log.info("=== Done ===")
