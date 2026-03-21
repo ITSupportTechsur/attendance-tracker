@@ -1,0 +1,7 @@
+sample_report.html
+sample_report.xlsx
+~$*
+.azure/
+__pycache__/
+*.pyc
+/tmp/

@@ -556,7 +556,163 @@ def _safe_sheet_name(name: str) -> str:
     )
 
 
-def _team_sheet(df_team: pd.DataFrame, writer, sheet_name: str) -> None:
+def _apply_sheet_formatting(
+    ws, df_cols: list, title: str, subtitle: str, tab_color: str = "F0B429"
+) -> None:
+    """Apply professional formatting to a worksheet written with startrow=3."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    n_cols    = len(df_cols) + 1   # +1 for the index "#" column
+    col_names = ["#"] + list(df_cols)
+
+    # Sheet tab colour
+    ws.sheet_properties.tabColor = tab_color
+
+    # ── Palette ────────────────────────────────────────────────────────────
+    GOLD     = "F0B429"
+    HDR_BG   = "3D3A35"   # warm charcoal
+    EVEN_BG  = "FAFAF8"   # warm off-white
+    BORDER_C = "ECECEC"   # subtle row separator
+
+    _gold_left  = Border(left=Side(style="thick", color=GOLD))
+    _gold_btm   = Side(style="medium", color=GOLD)
+    _row_border = Border(bottom=Side(style="thin", color=BORDER_C))
+
+    # ── Title (row 1) & subtitle (row 2) ──────────────────────────────────
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[2].height = 16
+
+    tc = ws.cell(row=1, column=1)
+    tc.value     = title
+    tc.font      = Font(bold=True, size=14, color="2D2D2D", name="Calibri")
+    tc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    tc.border    = _gold_left
+
+    sc = ws.cell(row=2, column=1)
+    sc.value     = subtitle
+    sc.font      = Font(italic=True, size=10, color="9E9E9E", name="Calibri")
+    sc.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    sc.border    = _gold_left
+
+    # ── Header row (row 4) ─────────────────────────────────────────────────
+    _NUM_COLS = {"#", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"}
+    hdr_fill  = PatternFill("solid", fgColor=HDR_BG)
+    hdr_font  = Font(bold=True, color="FFFFFF", name="Calibri", size=10)
+
+    for c_idx, col_name in enumerate(col_names, start=1):
+        cell           = ws.cell(row=4, column=c_idx)
+        cell.fill      = hdr_fill
+        cell.font      = hdr_font
+        cell.border    = Border(bottom=_gold_btm)
+        is_num         = str(col_name) in _NUM_COLS
+        cell.alignment = Alignment(
+            horizontal="center" if is_num else "left",
+            vertical="center", wrap_text=True,
+            indent=0 if is_num else 1,
+        )
+    ws.row_dimensions[4].height = 30
+    ws.freeze_panes = ws.cell(row=5, column=1)
+
+    # ── Column indices ─────────────────────────────────────────────────────
+    pct_idx = next(
+        (i + 1 for i, c in enumerate(col_names) if "Attendance" in str(c)), None
+    )
+    emp_idx = next(
+        (i + 1 for i, c in enumerate(col_names) if str(c) == "Employee"), None
+    )
+
+    # ── Fonts & fills ──────────────────────────────────────────────────────
+    even_fill  = PatternFill("solid", fgColor=EVEN_BG)
+    pct_fills  = {
+        "zero":    PatternFill("solid", fgColor="FDDEDE"),
+        "atrisk":  PatternFill("solid", fgColor="FFE8CC"),
+        "caution": PatternFill("solid", fgColor="FFF3CD"),
+        "good":    PatternFill("solid", fgColor="D4EDDA"),
+    }
+    pct_fonts  = {
+        "zero":    Font(name="Calibri", size=10, bold=True, color="A52020"),
+        "atrisk":  Font(name="Calibri", size=10, bold=True, color="924800"),
+        "caution": Font(name="Calibri", size=10, bold=True, color="856404"),
+        "good":    Font(name="Calibri", size=10, bold=True, color="1A6B35"),
+    }
+    emp_font   = Font(name="Calibri", size=10, bold=True,  color="2D2D2D")
+    num_font   = Font(name="Calibri", size=10,             color="4A4A4A")
+    dim_font   = Font(name="Calibri", size=10,             color="ABABAB")
+    data_font  = Font(name="Calibri", size=10,             color="2D2D2D")
+
+    # ── Data rows ──────────────────────────────────────────────────────────
+    for r_idx, row_cells in enumerate(
+        ws.iter_rows(min_row=5, max_row=ws.max_row), start=0
+    ):
+        is_even = r_idx % 2 == 0
+
+        for c_idx_0, cell in enumerate(row_cells):
+            c_idx    = c_idx_0 + 1
+            col_name = col_names[c_idx_0] if c_idx_0 < len(col_names) else ""
+            is_num   = str(col_name) in _NUM_COLS and str(col_name) != "Attendance %"
+
+            cell.border    = _row_border
+            cell.alignment = Alignment(
+                horizontal="center" if is_num else "left",
+                vertical="center",
+                indent=0 if is_num else 1,
+            )
+
+            if c_idx == pct_idx:
+                pass   # handled separately
+            elif c_idx == emp_idx:
+                cell.font = emp_font
+                if is_even: cell.fill = even_fill
+            elif str(col_name) == "#":
+                cell.font = dim_font
+                if is_even: cell.fill = even_fill
+            elif is_num:
+                cell.font = num_font
+                if is_even: cell.fill = even_fill
+            else:
+                cell.font = data_font
+                if is_even: cell.fill = even_fill
+
+        if pct_idx:
+            pct_cell = row_cells[pct_idx - 1]
+            try:
+                val = float(pct_cell.value)
+                key = (
+                    "zero"    if val == 0  else
+                    "atrisk"  if val < 80  else
+                    "caution" if val < 100 else
+                    "good"
+                )
+                pct_cell.fill          = pct_fills[key]
+                pct_cell.font          = pct_fonts[key]
+                pct_cell.number_format = '0.0"%"'
+                pct_cell.alignment     = Alignment(horizontal="center", vertical="center")
+                pct_cell.border        = _row_border
+            except (TypeError, ValueError):
+                pass
+
+    # ── Column widths ──────────────────────────────────────────────────────
+    col_widths = {
+        "#": 4, "Employee": 24, "Days Present": 13, "Days Absent": 12,
+        "Total Weekdays": 14, "Attendance %": 14, "Manager": 24, "Manager Email": 30,
+    }
+    for c_idx, col_name in enumerate(col_names, start=1):
+        ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(
+            str(col_name), 15
+        )
+
+
+def _team_sheet(
+    df_team: pd.DataFrame,
+    writer,
+    sheet_name: str,
+    title: str,
+    subtitle: str,
+    tab_color: str = "8B8680",
+) -> None:
     cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
     sheet_df = (
         df_team[cols]
@@ -565,7 +721,13 @@ def _team_sheet(df_team: pd.DataFrame, writer, sheet_name: str) -> None:
         .reset_index(drop=True)
     )
     sheet_df.index += 1
-    sheet_df.to_excel(writer, sheet_name=sheet_name, index=True, index_label="#")
+    sheet_df.to_excel(
+        writer, sheet_name=sheet_name,
+        index=True, index_label="#", startrow=3,
+    )
+    _apply_sheet_formatting(
+        writer.sheets[sheet_name], list(sheet_df.columns), title, subtitle, tab_color
+    )
 
 
 def generate_report_excel(
@@ -574,6 +736,7 @@ def generate_report_excel(
     start: date,
     end: date,
 ) -> bytes:
+    period = f"{start.strftime('%b %d')} \u2013 {end.strftime('%b %d, %Y')}"
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
 
@@ -591,7 +754,17 @@ def generate_report_excel(
             .reset_index(drop=True)
         )
         summary.index += 1
-        summary.to_excel(writer, sheet_name="All Employees", index=True, index_label="#")
+        summary.to_excel(
+            writer, sheet_name="All Employees",
+            index=True, index_label="#", startrow=3,
+        )
+        _apply_sheet_formatting(
+            writer.sheets["All Employees"],
+            list(summary.columns),
+            "TechSur Attendance Report",
+            f"Period: {period}  |  All Employees",
+            tab_color="F0B429",   # gold — primary sheet
+        )
 
         # One sheet per manager
         if "Manager" in unique_days.columns:
@@ -602,17 +775,32 @@ def generate_report_excel(
             for mgr in named_managers:
                 team = unique_days[unique_days["Manager"] == mgr].copy()
                 if not team.empty:
-                    _team_sheet(team, writer, _safe_sheet_name(mgr))
+                    _team_sheet(
+                        team, writer, _safe_sheet_name(mgr),
+                        title=mgr,
+                        subtitle=f"Period: {period}",
+                        tab_color="5D7B8A",   # muted slate blue
+                    )
 
             no_mgr = unique_days[
                 unique_days["Manager"].isin(["No Manager", "Unknown / Not Mapped"])
             ].copy()
             if not no_mgr.empty:
-                _team_sheet(no_mgr, writer, "No Manager")
+                _team_sheet(
+                    no_mgr, writer, "No Manager",
+                    title="No Manager Assigned",
+                    subtitle=f"Period: {period}",
+                    tab_color="AAAAAA",   # grey
+                )
 
         # 0 Attendance sheet
         if not zero_df.empty:
-            _team_sheet(zero_df, writer, "0 Attendance")
+            _team_sheet(
+                zero_df, writer, "0 Attendance",
+                title="0 Attendance \u2014 No Badge Swipes Recorded",
+                subtitle=f"Period: {period}",
+                tab_color="C0392B",   # red
+            )
 
     log.info("Excel report generated")
     return output.getvalue()
