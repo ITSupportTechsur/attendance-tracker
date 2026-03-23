@@ -2,8 +2,8 @@ name: Weekly Attendance Report
 
 on:
   schedule:
-    # Every Monday at 13:30 UTC = 9:30 AM EDT (adjusts to 8:30 AM EST in winter)
-    - cron: '30 13 * * 1'
+    # Every Monday at 14:00 UTC = 10:00 AM EDT (adjusts to 9:00 AM EST in winter)
+    - cron: '0 14 * * 1'
   workflow_dispatch:
     inputs:
       recipients:
