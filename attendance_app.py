@@ -495,16 +495,16 @@ m5.metric("0 Attendance",       len(zero_df), help="DataWatch badge holders with
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 def color_pct(val):
-    if val >= 80:
+    if val >= 60:
         return "background-color: #1a6b3c; color: #a8f0c6; font-weight: bold"
-    elif val >= 50:
+    elif val >= 40:
         return "background-color: #7a5c00; color: #ffd966; font-weight: bold"
     else:
         return "background-color: #7a1a1a; color: #f4a0a0; font-weight: bold"
 
 def bar_color(pct):
-    if pct >= 80: return "#2ecc71"
-    elif pct >= 50: return "#f39c12"
+    if pct >= 60: return "#2ecc71"
+    elif pct >= 40: return "#f39c12"
     else: return "#e74c3c"
 
 def make_bar_chart(df_in, title=""):
@@ -671,9 +671,9 @@ elif view_mode == "By Manager":
         mgr_email = team["Manager Email"].iloc[0] if "Manager Email" in team.columns else ""
         team_count = len(team)
         avg_pct    = team["Attendance %"].mean()
-        green_count  = (team["Attendance %"] >= 80).sum()
-        yellow_count = ((team["Attendance %"] >= 50) & (team["Attendance %"] < 80)).sum()
-        red_count    = (team["Attendance %"] < 50).sum()
+        green_count  = (team["Attendance %"] >= 60).sum()
+        yellow_count = ((team["Attendance %"] >= 40) & (team["Attendance %"] < 60)).sum()
+        red_count    = (team["Attendance %"] < 40).sum()
 
         # ── Manager header banner ──────────────────────────────────────────────
         st.markdown(
