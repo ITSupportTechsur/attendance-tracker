@@ -710,7 +710,7 @@ def _apply_sheet_formatting(
                 val = float(pct_cell.value)
                 key = (
                     "zero"    if val == 0  else
-                    "atrisk"  if val < 80  else
+                    "atrisk"  if val < 60  else
                     "caution" if val < 100 else
                     "good"
                 )
@@ -841,7 +841,7 @@ def _html_pct_badge(val: float) -> str:
     try:
         v = float(val)
         if v == 0:    cls, label = "badge-red",    f"{v:.0f}%"
-        elif v < 80:  cls, label = "badge-orange",  f"{v:.0f}%"
+        elif v < 60:  cls, label = "badge-orange",  f"{v:.0f}%"
         elif v < 100: cls, label = "badge-yellow",  f"{v:.0f}%"
         else:         cls, label = "badge-green",   f"{v:.0f}%"
         return f'<span class="badge {cls}">{label}</span>'
@@ -890,7 +890,7 @@ def generate_report_html(
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 80).sum())
+    at_risk    = int((unique_days["Attendance %"] < 60).sum())
     zero_count = len(zero_df)
 
     # Logo (base64-embedded if file exists)
@@ -928,7 +928,7 @@ def generate_report_html(
             team   = unique_days[unique_days["Manager"] == mgr].copy()
             avg    = team["Attendance %"].mean()
             n      = len(team)
-            risk_n = int((team["Attendance %"] < 80).sum())
+            risk_n = int((team["Attendance %"] < 60).sum())
             tbl    = _html_table(team.sort_values("Attendance %"), show_manager=False)
             risk_pill = f'<span class="risk-pill">{risk_n} at risk</span>' if risk_n > 0 else ""
             mgr_sections += (
@@ -972,7 +972,7 @@ def generate_report_html(
         )
 
     # Stat cards
-    avg_color  = "#27AE60" if avg_pct >= 80 else "#E67E22" if avg_pct >= 60 else "#E74C3C"
+    avg_color  = "#27AE60" if avg_pct >= 60 else "#E67E22" if avg_pct >= 40 else "#E74C3C"
     risk_color = "#E74C3C" if at_risk    > 0 else "#27AE60"
     zero_color = "#E74C3C" if zero_count > 0 else "#27AE60"
     cards = (
@@ -981,7 +981,7 @@ def generate_report_html(
         f'<div class="card"><div class="stat" style="color:{avg_color}">{avg_pct:.1f}%</div>'
         f'<div class="stat-label">Avg Attendance</div></div>'
         f'<div class="card"><div class="stat" style="color:{risk_color}">{at_risk}</div>'
-        f'<div class="stat-label">At Risk (&lt;80%)</div></div>'
+        f'<div class="stat-label">At Risk (&lt;60%)</div></div>'
         f'<div class="card"><div class="stat" style="color:{zero_color}">{zero_count}</div>'
         f'<div class="stat-label">Zero Attendance</div></div>'
     )
@@ -1149,7 +1149,7 @@ def send_email_report(
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 80).sum())
+    at_risk    = int((unique_days["Attendance %"] < 60).sum())
     zero_count = len(zero_df)
 
     sharepoint_line = (
@@ -1170,7 +1170,7 @@ def send_email_report(
       <td>{total_emp}</td></tr>
   <tr><td style="padding:4px 12px 4px 0;"><b>Average attendance</b></td>
       <td>{avg_pct:.1f}%</td></tr>
-  <tr><td style="padding:4px 12px 4px 0;"><b>At risk (&lt;80%)</b></td>
+  <tr><td style="padding:4px 12px 4px 0;"><b>At risk (&lt;60%)</b></td>
       <td>{at_risk}</td></tr>
   <tr><td style="padding:4px 12px 4px 0;"><b>0 attendance</b></td>
       <td>{zero_count}</td></tr>
@@ -1249,7 +1249,7 @@ def post_to_teams_webhook(
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 80).sum())
+    at_risk    = int((unique_days["Attendance %"] < 60).sum())
     zero_count = len(zero_df)
 
     facts = [
@@ -1257,7 +1257,7 @@ def post_to_teams_webhook(
         {"title": "Working days",         "value": str(total_weekdays)},
         {"title": "Employees tracked",    "value": str(total_emp)},
         {"title": "Average attendance",   "value": f"{avg_pct:.1f}%"},
-        {"title": "At risk (<80%)",       "value": str(at_risk)},
+        {"title": "At risk (<60%)",       "value": str(at_risk)},
         {"title": "0 attendance",         "value": str(zero_count)},
     ]
 

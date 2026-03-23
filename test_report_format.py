@@ -35,7 +35,7 @@ def _pct_badge(val):
     try:
         v = float(val)
         if v == 0:    cls, label = "badge-red",    f"{v:.0f}%"
-        elif v < 80:  cls, label = "badge-orange",  f"{v:.0f}%"
+        elif v < 60:  cls, label = "badge-orange",  f"{v:.0f}%"
         elif v < 100: cls, label = "badge-yellow",  f"{v:.0f}%"
         else:         cls, label = "badge-green",   f"{v:.0f}%"
         return f'<span class="badge {cls}">{label}</span>'
@@ -84,7 +84,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 80).sum())
+    at_risk    = int((unique_days["Attendance %"] < 60).sum())
     zero_count = len(zero_df)
 
     # ── Logo ───────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
             team     = unique_days[unique_days["Manager"] == mgr].copy()
             avg      = team["Attendance %"].mean()
             n        = len(team)
-            risk_n   = int((team["Attendance %"] < 80).sum())
+            risk_n   = int((team["Attendance %"] < 60).sum())
             tbl      = _build_table(team.sort_values("Attendance %"), show_manager=False)
             risk_pill = (
                 f'<span class="risk-pill">{risk_n} at risk</span>'
@@ -175,7 +175,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
         )
 
     # ── Stat cards ─────────────────────────────────────────────────────────
-    avg_color  = "#27AE60" if avg_pct >= 80 else "#E67E22" if avg_pct >= 60 else "#E74C3C"
+    avg_color  = "#27AE60" if avg_pct >= 60 else "#E67E22" if avg_pct >= 40 else "#E74C3C"
     risk_color = "#E74C3C" if at_risk    > 0 else "#27AE60"
     zero_color = "#E74C3C" if zero_count > 0 else "#27AE60"
 
@@ -190,7 +190,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
 
         f'<div class="card">'
         f'<div class="stat" style="color:{risk_color}">{at_risk}</div>'
-        f'<div class="stat-label">At Risk (&lt;80%)</div></div>'
+        f'<div class="stat-label">At Risk (&lt;60%)</div></div>'
 
         f'<div class="card">'
         f'<div class="stat" style="color:{zero_color}">{zero_count}</div>'
@@ -595,7 +595,7 @@ def _apply_sheet_formatting_xl(ws, df_cols, title, subtitle, tab_color="F0B429")
             pct_cell = row_cells[pct_idx - 1]
             try:
                 val = float(pct_cell.value)
-                key = ("zero" if val==0 else "atrisk" if val<80 else "caution" if val<100 else "good")
+                key = ("zero" if val==0 else "atrisk" if val<60 else "caution" if val<100 else "good")
                 pct_cell.fill          = pct_fills[key]
                 pct_cell.font          = pct_fonts[key]
                 pct_cell.number_format = '0.0"%"'
