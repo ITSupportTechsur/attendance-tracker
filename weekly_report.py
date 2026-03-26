@@ -977,7 +977,7 @@ def generate_report_html(
     zero_color = "#E74C3C" if zero_count > 0 else "#27AE60"
     cards = (
         f'<div class="card"><div class="stat">{total_emp}</div>'
-        f'<div class="stat-label">Employees Tracked</div></div>'
+        f'<div class="stat-label">Hybrid Employees</div></div>'
         f'<div class="card"><div class="stat" style="color:{avg_color}">{avg_pct:.1f}%</div>'
         f'<div class="stat-label">Avg Attendance</div></div>'
         f'<div class="card"><div class="stat" style="color:{risk_color}">{at_risk}</div>'
