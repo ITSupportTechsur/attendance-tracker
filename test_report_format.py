@@ -182,7 +182,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
     cards = (
         f'<div class="card">'
         f'<div class="stat">{total_emp}</div>'
-        f'<div class="stat-label">Employees Tracked</div></div>'
+        f'<div class="stat-label">Hybrid Employees</div></div>'
 
         f'<div class="card">'
         f'<div class="stat" style="color:{avg_color}">{avg_pct:.1f}%</div>'
