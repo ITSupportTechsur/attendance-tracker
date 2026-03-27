@@ -413,11 +413,11 @@ def fetch_datawatch_names(token: str, site_id: str) -> set:
         raw = fields.get("field_1", "")
         if isinstance(raw, str):
             raw = raw.strip()
-            if raw and not _ISO_DATE_RE.match(raw):
+            if raw and not _ISO_DATE_RE.match(raw) and "will be deleted" not in raw.lower():
                 names.add(raw)
         elif isinstance(raw, dict):
             n = raw.get("LookupValue") or raw.get("displayName") or ""
-            if n:
+            if n and "will be deleted" not in n.lower():
                 names.add(n.strip())
 
     log.info(f"Fetched {len(names)} DataWatch assignees from SharePoint")
