@@ -565,12 +565,16 @@ def process_attendance(
         zero_df["Manager"]       = zero_df["Manager"].fillna("Unknown / Not Mapped")
         zero_df["Manager Email"] = zero_df["Manager Email"].fillna("")
 
+    # Merge zero-attendance people into the main list so they appear at 0%
+    if not zero_df.empty:
+        unique_days = pd.concat([unique_days, zero_df], ignore_index=True)
+
     log.info(
-        f"Processed: {len(unique_days)} employees, "
-        f"{len(zero_df)} zero-attendance, "
+        f"Processed: {len(unique_days)} employees "
+        f"({int((unique_days['Attendance %'] == 0).sum())} zero-attendance), "
         f"{total_weekdays} weekdays"
     )
-    return unique_days, zero_df, total_weekdays
+    return unique_days, pd.DataFrame(), total_weekdays
 
 
 # ── Step 6: Generate Excel report ─────────────────────────────────────────────
@@ -891,7 +895,7 @@ def generate_report_html(
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
     at_risk    = int((unique_days["Attendance %"] < 60).sum())
-    zero_count = len(zero_df)
+    zero_count = int((unique_days["Attendance %"] == 0).sum())
 
     # Logo (base64-embedded if file exists)
     logo_path = Path(__file__).parent / "techsur_logo.png"
@@ -1150,7 +1154,7 @@ def send_email_report(
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
     at_risk    = int((unique_days["Attendance %"] < 60).sum())
-    zero_count = len(zero_df)
+    zero_count = int((unique_days["Attendance %"] == 0).sum())
 
     sharepoint_line = (
         f'<p>📎 Full report also saved to SharePoint: '
@@ -1250,7 +1254,7 @@ def post_to_teams_webhook(
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
     at_risk    = int((unique_days["Attendance %"] < 60).sum())
-    zero_count = len(zero_df)
+    zero_count = int((unique_days["Attendance %"] == 0).sum())
 
     facts = [
         {"title": "Period",               "value": f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"},
