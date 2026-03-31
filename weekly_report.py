@@ -57,7 +57,7 @@ AZURE_CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
 REPORT_FROM_EMAIL   = os.environ["REPORT_FROM_EMAIL"]   # mailbox to send from
 REPORT_TO_EMAILS    = os.environ["REPORT_TO_EMAILS"]    # comma-separated recipients
 TEAMS_WEBHOOK_URL   = os.environ.get("TEAMS_WEBHOOK_URL", "")  # optional
-TEAMS_CHAT_ID       = os.environ.get("TEAMS_CHAT_ID", "")      # optional — group chat ID
+TEAMS_CHAT_WEBHOOK_URL = os.environ.get("TEAMS_CHAT_WEBHOOK_URL", "")  # optional — Power Automate webhook for group chat
 
 SHAREPOINT_SITE_PATH = "techsur.sharepoint.com:/sites/ITSupportOperations"
 UPLOAD_FOLDER        = "Attendance Reports"   # folder inside site's document library
@@ -1309,10 +1309,9 @@ def post_to_teams_webhook(
         log.warning(f"Teams webhook post error: {exc}")
 
 
-# ── Step 10: Post summary to Teams group chat (via Graph API) ─────────────────
+# ── Step 10: Post summary to Teams group chat (via Power Automate webhook) ─────
 
-def post_to_teams_chat(
-    token: str,
+def post_to_teams_chat_webhook(
     unique_days: pd.DataFrame,
     zero_df: pd.DataFrame,
     total_weekdays: int,
@@ -1321,8 +1320,8 @@ def post_to_teams_chat(
     file_url: str,
     html_url: str = "",
 ) -> None:
-    if not TEAMS_CHAT_ID:
-        log.info("TEAMS_CHAT_ID not set — skipping group chat post")
+    if not TEAMS_CHAT_WEBHOOK_URL:
+        log.info("TEAMS_CHAT_WEBHOOK_URL not set — skipping group chat post")
         return
 
     total_emp  = len(unique_days)
@@ -1330,40 +1329,43 @@ def post_to_teams_chat(
     at_risk    = int((unique_days["Attendance %"] < 60).sum())
     zero_count = int((unique_days["Attendance %"] == 0).sum())
 
-    lines = [
-        f"<b>Weekly Attendance Report — {start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}</b>",
-        f"Period: {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}",
-        f"Working days: {total_weekdays}",
-        f"Employees tracked: {total_emp}",
-        f"Average attendance: {avg_pct:.1f}%",
-        f"At risk (&lt;60%): {at_risk}",
-        f"0 attendance: {zero_count}",
+    facts = [
+        {"title": "Period",             "value": f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"},
+        {"title": "Working days",       "value": str(total_weekdays)},
+        {"title": "Employees tracked",  "value": str(total_emp)},
+        {"title": "Average attendance", "value": f"{avg_pct:.1f}%"},
+        {"title": "At risk (<60%)",     "value": str(at_risk)},
+        {"title": "0 attendance",       "value": str(zero_count)},
     ]
+
+    body = [
+        {
+            "type": "TextBlock",
+            "size": "Large",
+            "weight": "Bolder",
+            "text": f"Weekly Attendance Report — {start.strftime('%b %d')} to {end.strftime('%b %d, %Y')}",
+            "wrap": True,
+        },
+        {"type": "FactSet", "facts": facts},
+    ]
+
+    actions = []
     if html_url:
-        lines.append(f'<a href="{html_url}">Open HTML Report</a>')
+        actions.append({"type": "Action.OpenUrl", "title": "Open HTML Report", "url": html_url})
     if file_url:
-        lines.append(f'<a href="{file_url}">Download Excel Report</a>')
+        actions.append({"type": "Action.OpenUrl", "title": "Download Excel Report", "url": file_url})
+    if actions:
+        body.append({"type": "ActionSet", "actions": actions})
 
-    content = "<br>".join(lines)
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
     payload = {
-        "body": {
-            "contentType": "html",
-            "content": content,
-        }
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body,
     }
     try:
-        resp = http_requests.post(
-            f"https://graph.microsoft.com/v1.0/chats/{TEAMS_CHAT_ID}/messages",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        if resp.status_code in (200, 201):
+        resp = http_requests.post(TEAMS_CHAT_WEBHOOK_URL, json=payload, timeout=30)
+        if resp.status_code in (200, 202):
             log.info("Teams group chat post sent successfully")
         else:
             log.warning(f"Teams group chat post failed ({resp.status_code}): {resp.text[:200]}")
@@ -1425,8 +1427,8 @@ def main():
     )
 
     # 10. Post summary to Teams group chat
-    post_to_teams_chat(
-        token, unique_days, zero_df, total_weekdays, start, end, file_url, html_url
+    post_to_teams_chat_webhook(
+        unique_days, zero_df, total_weekdays, start, end, file_url, html_url
     )
 
     log.info("=== Done ===")
