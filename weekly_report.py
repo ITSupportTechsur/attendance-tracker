@@ -1119,6 +1119,18 @@ def upload_to_sharepoint(
         f"/drive/root:/{subfolder_path}/{filename}:/content"
     )
     resp = http_requests.put(upload_url, headers=headers, data=file_bytes)
+    if resp.status_code == 423:
+        # File is locked (someone has it open) — retry with a unique filename
+        import time as _time
+        name, ext = filename.rsplit(".", 1) if "." in filename else (filename, "")
+        alt_filename = f"{name}_{int(_time.time())}.{ext}" if ext else f"{name}_{int(_time.time())}"
+        alt_url = (
+            f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+            f"/drive/root:/{subfolder_path}/{alt_filename}:/content"
+        )
+        log.warning(f"SharePoint file locked — retrying as {alt_filename}")
+        resp = http_requests.put(alt_url, headers=headers, data=file_bytes)
+
     if resp.status_code not in (200, 201):
         log.warning(f"SharePoint upload failed ({resp.status_code}): {resp.text[:200]}")
         return ""
