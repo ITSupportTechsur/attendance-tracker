@@ -38,5 +38,5 @@ jobs:
           REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
           REPORT_TO_EMAILS:    ${{ inputs.recipients != '' && inputs.recipients || secrets.REPORT_TO_EMAILS }}
           TEAMS_WEBHOOK_URL:   ${{ secrets.TEAMS_WEBHOOK_URL }}
-          TEAMS_CHAT_ID:       ${{ secrets.TEAMS_CHAT_ID }}
+          TEAMS_CHAT_WEBHOOK_URL: ${{ secrets.TEAMS_CHAT_WEBHOOK_URL }}
         run: python weekly_report.py
