@@ -30,6 +30,13 @@ DEFAULT_EXCLUDE_NAMES = [
     "Rupinder Yadav",       # removed from attendance tracker per management
 ]
 
+# Employees with non-standard in-office schedules.
+# Maps _name_key → expected days per week at the Reston office.
+CUSTOM_SCHEDULES: dict[str, int] = {
+    "aashti alam": 2,       # Aashti Fatima Alam — 2 days Reston, 1 day FAA
+    "joe ghaleb":  1,       # Joe Ghaleb — 1 day/week in office
+}
+
 
 def _name_key(name):
     """
@@ -398,6 +405,21 @@ unique_days = (
 unique_days["Total Weekdays"] = total_weekdays
 unique_days["Attendance %"] = (unique_days["Days Present"] / total_weekdays * 100).round(1)
 unique_days["Days Absent"]  = total_weekdays - unique_days["Days Present"]
+
+# Override for employees with non-standard office schedules
+for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
+    _cs_eff  = min(_cs_exp, total_weekdays)
+    _cs_mask = unique_days["_name"].apply(_name_key) == _cs_key
+    if _cs_mask.any():
+        unique_days.loc[_cs_mask, "Total Weekdays"] = _cs_eff
+        unique_days.loc[_cs_mask, "Attendance %"]   = (
+            (unique_days.loc[_cs_mask, "Days Present"] / _cs_eff * 100)
+            .round(1).clip(upper=100)
+        )
+        unique_days.loc[_cs_mask, "Days Absent"] = (
+            (_cs_eff - unique_days.loc[_cs_mask, "Days Present"]).clip(lower=0)
+        )
+
 unique_days = unique_days.sort_values("Attendance %", ascending=False).reset_index(drop=True)
 unique_days.index += 1
 
@@ -454,6 +476,13 @@ if _datawatch_names:
         st.session_state["fuzzy_matched"] = fuzzy_matched
     if zero_rows:
         zero_df = pd.DataFrame(zero_rows)
+        # Apply custom schedule overrides to zero-attendance rows
+        for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
+            _cs_eff  = min(_cs_exp, total_weekdays)
+            _cs_mask = zero_df["_name"].apply(_name_key) == _cs_key
+            if _cs_mask.any():
+                zero_df.loc[_cs_mask, "Total Weekdays"] = _cs_eff
+                zero_df.loc[_cs_mask, "Days Absent"]    = _cs_eff
         if has_managers:
             mgr_lookup_z = manager_df.copy()
             mgr_lookup_z["_key"] = mgr_lookup_z["Employee"].apply(_name_key)

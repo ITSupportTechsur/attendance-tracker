@@ -78,6 +78,14 @@ OWNER_EXCEPTIONS = {
     "amit yadav",           # company owner — no manager by design
 }
 
+# Employees with non-standard in-office schedules.
+# Maps _name_key → expected days per week at the Reston office.
+# Used so their Attendance % is calculated against their actual expectation, not 5.
+CUSTOM_SCHEDULES: dict[str, int] = {
+    "aashti alam": 2,       # Aashti Fatima Alam — 2 days Reston, 1 day FAA
+    "joe ghaleb":  1,       # Joe Ghaleb — 1 day/week in office
+}
+
 _BADGE_JUNK_WORDS = {"lost", "spare", "inventory", "handy"}
 _ISO_DATE_RE      = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
@@ -505,6 +513,20 @@ def process_attendance(
     ).round(1)
     unique_days["Days Absent"] = total_weekdays - unique_days["Days Present"]
 
+    # Override for employees with non-standard office schedules
+    for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
+        _cs_eff  = min(_cs_exp, total_weekdays)
+        _cs_mask = unique_days["_name"].apply(_name_key) == _cs_key
+        if _cs_mask.any():
+            unique_days.loc[_cs_mask, "Total Weekdays"] = _cs_eff
+            unique_days.loc[_cs_mask, "Attendance %"]   = (
+                (unique_days.loc[_cs_mask, "Days Present"] / _cs_eff * 100)
+                .round(1).clip(upper=100)
+            )
+            unique_days.loc[_cs_mask, "Days Absent"] = (
+                (_cs_eff - unique_days.loc[_cs_mask, "Days Present"]).clip(lower=0)
+            )
+
     # Merge manager data
     if not manager_df.empty:
         mgr_lookup          = manager_df.copy()
@@ -553,6 +575,16 @@ def process_attendance(
             })
 
     zero_df = pd.DataFrame(zero_rows)
+
+    # Apply custom schedule overrides to zero-attendance rows
+    if not zero_df.empty:
+        for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
+            _cs_eff  = min(_cs_exp, total_weekdays)
+            _cs_mask = zero_df["_name"].apply(_name_key) == _cs_key
+            if _cs_mask.any():
+                zero_df.loc[_cs_mask, "Total Weekdays"] = _cs_eff
+                zero_df.loc[_cs_mask, "Days Absent"]    = _cs_eff
+
     if not zero_df.empty and not manager_df.empty:
         mgr_lookup_z          = manager_df.copy()
         mgr_lookup_z["_key"]  = mgr_lookup_z["Employee"].apply(_name_key)
