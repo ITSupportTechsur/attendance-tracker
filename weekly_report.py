@@ -64,6 +64,7 @@ DEFAULT_EXCLUDE_NAMES = {
     "chief engineer master",
     "contractor shred it",
     "harvard 2",
+    "guest fob",
     "guest fob 1",
     "guest fob 2",
     "ramona shannon harvard maintenance",

@@ -22,6 +22,7 @@ DEFAULT_EXCLUDE_NAMES = [
     "Chief Engineer MASTER",
     "Contractor SHred It",
     "Harvard 2",
+    "Guest Fob",
     "Guest Fob 1",
     "Guest Fob 2",
     "Ramona Shannon Harvard Maintenance",
