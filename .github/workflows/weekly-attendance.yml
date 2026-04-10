@@ -9,6 +9,10 @@ on:
         description: 'Override recipient emails (comma-separated). Leave blank to use the REPORT_TO_EMAILS secret.'
         required: false
         default: ''
+      suppress_teams:
+        description: 'Set to "true" to skip the Teams group chat post.'
+        required: false
+        default: 'false'
 
 jobs:
   generate-report:
@@ -38,4 +42,5 @@ jobs:
           REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
           REPORT_TO_EMAILS:    ${{ inputs.recipients != '' && inputs.recipients || secrets.REPORT_TO_EMAILS }}
           TEAMS_CHAT_WEBHOOK_URL: ${{ secrets.TEAMS_CHAT_WEBHOOK_URL }}
+          SUPPRESS_TEAMS: ${{ inputs.suppress_teams }}
         run: python weekly_report.py

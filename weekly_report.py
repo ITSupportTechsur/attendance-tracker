@@ -1392,10 +1392,11 @@ def main():
         html_bytes=html_bytes, html_filename=html_filename,
     )
 
-    # 9. Post summary to Teams group chat
-    post_to_teams_chat_webhook(
-        unique_days, zero_df, total_weekdays, start, end, file_url, html_url
-    )
+    # 9. Post summary to Teams group chat (skipped if SUPPRESS_TEAMS=true)
+    if os.environ.get("SUPPRESS_TEAMS", "false").lower() != "true":
+        post_to_teams_chat_webhook(
+            unique_days, zero_df, total_weekdays, start, end, file_url, html_url
+        )
 
     log.info("=== Done ===")
 
