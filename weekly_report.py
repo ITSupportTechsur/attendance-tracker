@@ -484,9 +484,11 @@ def process_attendance(
     )
     df = df[df["_name"] != ""]
 
-    # Address filter
+    # Address filter — keep rows that match the office address OR have no address
+    # (Bluetooth/phone credentials sometimes log with a blank address)
     if address_col:
-        df = df[df[address_col].astype(str).str.strip() == OFFICE_ADDRESS]
+        _addr = df[address_col].astype(str).str.strip()
+        df = df[(_addr == OFFICE_ADDRESS) | (_addr.isin(["", "nan", "None"]))]
 
     # Tenant filter
     if tenant_col:
