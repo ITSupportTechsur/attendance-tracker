@@ -389,7 +389,8 @@ excluded_names_set = {n.strip().lower() for n in excluded_input.splitlines() if 
 st.session_state["excluded_names_list"] = [n for n in excluded_input.splitlines() if n.strip()]
 if excluded_names_set:
     before_excl = df_weekdays["_name"].nunique()
-    df_weekdays = df_weekdays[~df_weekdays["_name"].str.strip().str.lower().isin(excluded_names_set)]
+    _nl = df_weekdays["_name"].str.strip().str.lower()
+    df_weekdays = df_weekdays[~(_nl.isin(excluded_names_set) | _nl.str.startswith("guest"))]
     removed = before_excl - df_weekdays["_name"].nunique()
     if removed:
         st.info(f"Excluded **{removed}** name(s) from the report.")
