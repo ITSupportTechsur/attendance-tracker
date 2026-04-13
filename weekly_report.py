@@ -71,6 +71,7 @@ DEFAULT_EXCLUDE_NAMES = {
     "cristian mata",
     "bravo handy man",
     "rupinder yadav",       # removed from system per management
+    "louie chen",           # removed per management
 }
 
 # Employees who are intentionally without a manager (e.g. company owner).

@@ -29,6 +29,7 @@ DEFAULT_EXCLUDE_NAMES = [
     "Cristian Mata",
     "Bravo Handy Man",
     "Rupinder Yadav",       # removed from attendance tracker per management
+    "Louie Chen",           # removed per management
 ]
 
 # Employees with non-standard in-office schedules.
