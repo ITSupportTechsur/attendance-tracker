@@ -495,8 +495,9 @@ def process_attendance(
     df = df[(df["_date"] >= start) & (df["_date"] <= end)]
     df = df[pd.to_datetime(df["_date"]).dt.dayofweek < 5]
 
-    # Exclude default non-employee names
-    df = df[~df["_name"].str.strip().str.lower().isin(DEFAULT_EXCLUDE_NAMES)]
+    # Exclude default non-employee names and anything starting with "guest"
+    _name_lower = df["_name"].str.strip().str.lower()
+    df = df[~(_name_lower.isin(DEFAULT_EXCLUDE_NAMES) | _name_lower.str.startswith("guest"))]
 
     total_weekdays = count_weekdays(start, end)
 
