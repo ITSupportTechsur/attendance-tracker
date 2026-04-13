@@ -572,7 +572,9 @@ def process_attendance(
         for n in sorted(datawatch_names):
             if not n.strip():
                 continue
-            if n.strip().lower() in DEFAULT_EXCLUDE_NAMES or _is_junk_badge_name(n):
+            if (n.strip().lower() in DEFAULT_EXCLUDE_NAMES
+                    or _is_junk_badge_name(n)
+                    or n.strip().lower().startswith("guest")):
                 continue
             k     = _name_key(n)
             if k in existing_keys_set:
