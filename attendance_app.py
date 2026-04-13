@@ -304,6 +304,14 @@ else:
 
 df = df[df["_name"] != ""]
 
+# Remove consecutive duplicate name tokens: "Ranga X X" → "Ranga X"
+df["_name"] = df["_name"].apply(
+    lambda n: " ".join(
+        [n.split()[i] for i in range(len(n.split()))
+         if i == 0 or n.split()[i].lower() != n.split()[i - 1].lower()]
+    )
+)
+
 # Merge multiple fobs: "Craig Park 2" → "Craig Park" (strip trailing digit)
 df["_name"] = df["_name"].apply(
     lambda n: " ".join(n.split()[:-1]) if n.split() and n.split()[-1].isdigit() else n
