@@ -129,6 +129,15 @@ def _name_key(name: str) -> str:
     return " ".join(deduped) if deduped else name.strip().lower()
 
 
+def _dedupe_name(name: str) -> str:
+    """Remove consecutive duplicate tokens from a name.
+    e.g. 'Ranga Lakshminarayanan Lakshminarayanan' → 'Ranga Lakshminarayanan'"""
+    tokens = name.strip().split()
+    deduped = [tokens[i] for i in range(len(tokens))
+               if i == 0 or tokens[i].lower() != tokens[i - 1].lower()]
+    return " ".join(deduped)
+
+
 def _is_junk_badge_name(name: str) -> bool:
     return any(t in _BADGE_JUNK_WORDS for t in name.lower().split())
 
@@ -477,6 +486,9 @@ def process_attendance(
         df["_name"] = df[nc].fillna("").str.strip() if nc else ""
 
     df = df[df["_name"] != ""]
+
+    # Remove consecutive duplicate name tokens: "Ranga X X" → "Ranga X"
+    df["_name"] = df["_name"].apply(_dedupe_name)
 
     # Merge multiple fobs: "Craig Park 2" → "Craig Park" (strip trailing digit)
     df["_name"] = df["_name"].apply(
