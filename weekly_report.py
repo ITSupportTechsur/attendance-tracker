@@ -207,8 +207,14 @@ def download_badge_excel(start: date, end: date) -> bytes:
                 "input[type='submit']"
             )
             page.wait_for_load_state("domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
             log.info(f"After login URL: {page.url!r}")
+
+            # Verify login succeeded — if still on login page, wait longer
+            if "LogOn" in page.url or page.url.rstrip("/") == DATAWATCH_BASE_URL.rstrip("/"):
+                log.info("Still on login/home page — waiting for redirect...")
+                page.wait_for_timeout(4000)
+                log.info(f"URL after extra wait: {page.url!r}")
 
         except Exception as exc:
             # Save a screenshot so we can see what the browser saw
@@ -218,8 +224,17 @@ def download_badge_excel(start: date, end: date) -> bytes:
 
         log.info("Logged in to D3000 DirectAccess")
 
-        # ── Navigate to History ───────────────────────────────────────────────
-        page.goto(f"{DATAWATCH_BASE_URL}/History/Index", wait_until="domcontentloaded")
+        # ── Navigate to History (retry once on ERR_ABORTED) ───────────────────
+        for _attempt in range(2):
+            try:
+                page.goto(f"{DATAWATCH_BASE_URL}/History/Index", wait_until="domcontentloaded", timeout=60_000)
+                break
+            except Exception as _nav_err:
+                if _attempt == 0:
+                    log.warning(f"History navigation attempt 1 failed ({_nav_err}), retrying in 5s...")
+                    page.wait_for_timeout(5000)
+                else:
+                    raise
         page.wait_for_timeout(3000)
 
         # Debug: log all input fields visible on the page
