@@ -72,6 +72,7 @@ DEFAULT_EXCLUDE_NAMES = {
     "bravo handy man",
     "rupinder yadav",       # removed from system per management
     "louie chen",           # removed per management
+    "megan giesy",          # remote / Texas — not in office
 }
 
 # Employees who are intentionally without a manager (e.g. company owner).
@@ -84,8 +85,14 @@ OWNER_EXCEPTIONS = {
 # Maps _name_key → expected days per week at the Reston office.
 # Used so their Attendance % is calculated against their actual expectation, not 5.
 CUSTOM_SCHEDULES: dict[str, int] = {
-    "aashti alam": 2,       # Aashti Fatima Alam — 2 days Reston, 1 day FAA
-    "joe ghaleb":  1,       # Joe Ghaleb — 1 day/week in office
+    "aashti alam":        2,   # Aashti Fatima Alam — 2 days Reston, 1 day FAA
+    "joe ghaleb":         1,   # Joe Ghaleb — 1 day/week in office
+    "shawn faunce":       3,
+    "david prompovitch":  3,
+    "nat iyer":           3,
+    "tapan rath":         3,
+    "gyvonda mccain":     2,
+    "mary raguso":        2,
 }
 
 _BADGE_JUNK_WORDS = {"lost", "spare", "inventory", "handy"}

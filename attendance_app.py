@@ -30,13 +30,20 @@ DEFAULT_EXCLUDE_NAMES = [
     "Bravo Handy Man",
     "Rupinder Yadav",       # removed from attendance tracker per management
     "Louie Chen",           # removed per management
+    "Megan Giesy",          # remote / Texas — not in office
 ]
 
 # Employees with non-standard in-office schedules.
 # Maps _name_key → expected days per week at the Reston office.
 CUSTOM_SCHEDULES: dict[str, int] = {
-    "aashti alam": 2,       # Aashti Fatima Alam — 2 days Reston, 1 day FAA
-    "joe ghaleb":  1,       # Joe Ghaleb — 1 day/week in office
+    "aashti alam":        2,   # Aashti Fatima Alam — 2 days Reston, 1 day FAA
+    "joe ghaleb":         1,   # Joe Ghaleb — 1 day/week in office
+    "shawn faunce":       3,
+    "david prompovitch":  3,
+    "nat iyer":           3,
+    "tapan rath":         3,
+    "gyvonda mccain":     2,
+    "mary raguso":        2,
 }
 
 
