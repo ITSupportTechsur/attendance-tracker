@@ -1441,5 +1441,63 @@ def main():
     log.info("=== Done ===")
 
 
+def send_failure_alert(error_text: str, traceback_text: str) -> None:
+    """Best-effort email to ALERT_EMAIL (or REPORT_FROM_EMAIL) when main() fails."""
+    try:
+        alert_to = os.environ.get("ALERT_EMAIL", "").strip() or REPORT_FROM_EMAIL
+        if not alert_to:
+            log.warning("No ALERT_EMAIL/REPORT_FROM_EMAIL — skipping failure alert.")
+            return
+
+        hint = ""
+        if "ForceChangePassword" in traceback_text or "ForceChangePassword" in error_text:
+            hint = (
+                "<p><b>Likely cause:</b> D3000 forced a password rotation on the "
+                "A.Admin5 service account. Update the <code>DATAWATCH_PASSWORD</code> "
+                "GitHub secret in <code>ITSupportTechsur/attendance-tracker</code>, "
+                "then re-run the workflow.</p>"
+            )
+
+        body = (
+            "<p>The weekly attendance report <b>failed to run</b>.</p>"
+            + hint
+            + f"<p><b>Error:</b><br><code>{escape(error_text)}</code></p>"
+            + "<p><b>Traceback:</b></p>"
+            + f"<pre style=\"font-family:monospace;font-size:12px;background:#f4f4f4;"
+              f"padding:8px;white-space:pre-wrap;\">{escape(traceback_text)}</pre>"
+            + "<p><b>Logs:</b> "
+              "<a href=\"https://github.com/ITSupportTechsur/attendance-tracker/actions\">"
+              "GitHub Actions runs</a></p>"
+        )
+
+        token = get_graph_token()
+        payload = {
+            "message": {
+                "subject": "❌ Weekly Attendance Report FAILED",
+                "body": {"contentType": "HTML", "content": body},
+                "toRecipients": [{"emailAddress": {"address": alert_to}}],
+            },
+            "saveToSentItems": False,
+        }
+        resp = http_requests.post(
+            f"https://graph.microsoft.com/v1.0/users/{REPORT_FROM_EMAIL}/sendMail",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code == 202:
+            log.info(f"Failure alert sent to {alert_to}")
+        else:
+            log.warning(f"Failure alert send returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as alert_exc:
+        log.warning(f"Could not send failure alert: {alert_exc}")
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        import traceback as _tb
+        tb_str = _tb.format_exc()
+        log.error(f"Weekly report FAILED: {exc}")
+        send_failure_alert(str(exc), tb_str)
+        raise
