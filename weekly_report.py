@@ -162,6 +162,50 @@ def _last_first_initial_match(k: str, candidates: list) -> str | None:
     return None
 
 
+def _merge_managers(df: pd.DataFrame, manager_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach Manager / Manager Email to ``df`` by matching ``df['_name']`` to Azure AD.
+
+    Exact normalised-name match first, then a difflib fuzzy match (0.82) and a
+    last-name + first-initial fallback. This lets badge-log spellings that differ
+    from Azure AD (Jim/James, Warma/Varma, Arhun/Arjun) still resolve to the right
+    manager instead of falling through to "Unknown / Not Mapped". Owner exceptions
+    are excluded from the fuzzy pool so no one snaps onto the owner (e.g. the known
+    'Aaniya Yadav' → 'Amit Yadav' near-match)."""
+    mgr_lookup = manager_df.copy()
+    mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
+    mgr_lookup = mgr_lookup.drop_duplicates(subset=["_key"])
+
+    ad_keys       = list(mgr_lookup["_key"])
+    ad_key_set    = set(ad_keys)
+    fallback_keys = [k for k in ad_keys if k not in OWNER_EXCEPTIONS]
+
+    resolved: dict[str, str] = {}
+
+    def _resolve(name: str):
+        k = _name_key(name)
+        if k in ad_key_set:
+            return k
+        close = difflib.get_close_matches(k, fallback_keys, n=1, cutoff=0.82)
+        match = close[0] if close else _last_first_initial_match(k, fallback_keys)
+        if match:
+            resolved[name] = match
+        return match
+
+    df = df.copy()
+    df["_match_key"] = df["_name"].apply(_resolve)
+    df = df.merge(
+        mgr_lookup[["_key", "Manager", "Manager Email"]].rename(columns={"_key": "_match_key"}),
+        on="_match_key", how="left",
+    ).drop(columns=["_match_key"])
+    df["Manager"]       = df["Manager"].fillna("Unknown / Not Mapped")
+    df["Manager Email"] = df["Manager Email"].fillna("")
+
+    if resolved:
+        log.info("Manager name-matched via fallback: "
+                 + ", ".join(f"{b!r}→{a!r}" for b, a in resolved.items()))
+    return df
+
+
 # ── Step 1: Download badge Excel from D3000 ───────────────────────────────────
 
 def download_badge_excel(start: date, end: date) -> bytes:
@@ -566,17 +610,9 @@ def process_attendance(
                 (_cs_eff - unique_days.loc[_cs_mask, "Days Present"]).clip(lower=0)
             )
 
-    # Merge manager data
+    # Merge manager data (exact name match + fuzzy / last-name+first-initial fallback)
     if not manager_df.empty:
-        mgr_lookup          = manager_df.copy()
-        mgr_lookup["_key"]  = mgr_lookup["Employee"].apply(_name_key)
-        unique_days["_key"] = unique_days["_name"].apply(_name_key)
-        unique_days = unique_days.merge(
-            mgr_lookup[["_key", "Manager", "Manager Email"]],
-            on="_key", how="left",
-        ).drop(columns=["_key"])
-        unique_days["Manager"]       = unique_days["Manager"].fillna("Unknown / Not Mapped")
-        unique_days["Manager Email"] = unique_days["Manager Email"].fillna("")
+        unique_days = _merge_managers(unique_days, manager_df)
 
         # Owner exceptions: reclassify so they don't appear in "No Manager" section
         def _reclassify_owner(row):
@@ -627,15 +663,7 @@ def process_attendance(
                 zero_df.loc[_cs_mask, "Days Absent"]    = _cs_eff
 
     if not zero_df.empty and not manager_df.empty:
-        mgr_lookup_z          = manager_df.copy()
-        mgr_lookup_z["_key"]  = mgr_lookup_z["Employee"].apply(_name_key)
-        zero_df["_key"]       = zero_df["_name"].apply(_name_key)
-        zero_df = zero_df.merge(
-            mgr_lookup_z[["_key", "Manager", "Manager Email"]],
-            on="_key", how="left",
-        ).drop(columns=["_key"])
-        zero_df["Manager"]       = zero_df["Manager"].fillna("Unknown / Not Mapped")
-        zero_df["Manager Email"] = zero_df["Manager Email"].fillna("")
+        zero_df = _merge_managers(zero_df, manager_df)
 
     # Merge zero-attendance people into the main list so they appear at 0%
     if not zero_df.empty:

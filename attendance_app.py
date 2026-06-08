@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import difflib
 from datetime import timedelta, date
 import plotly.graph_objects as go
 
@@ -32,6 +33,12 @@ DEFAULT_EXCLUDE_NAMES = [
     "Louie Chen",           # removed per management
     "Megan Giesy",          # remote / Texas — not in office
 ]
+
+# Employees intentionally without a manager (company owner). Excluded from the
+# fuzzy manager-match pool so no one snaps onto them (e.g. 'Aaniya Yadav' → 'Amit Yadav').
+OWNER_EXCEPTIONS = {
+    "amit yadav",
+}
 
 # Employees with non-standard in-office schedules.
 # Maps _name_key → expected days per week at the Reston office.
@@ -85,6 +92,48 @@ def _last_first_initial_match(k, candidates):
         if len(parts_c) >= 2 and parts_k[-1] == parts_c[-1] and parts_k[0][0] == parts_c[0][0]:
             return c
     return None
+
+
+def _merge_managers(df, manager_df):
+    """Attach Manager / Manager Email to df by matching df['_name'] to Azure AD names.
+
+    Exact normalised-name match first, then a difflib fuzzy match (0.82) and a
+    last-name + first-initial fallback, so badge-log spellings that differ from
+    Azure AD (Jim/James, Warma/Varma, Arhun/Arjun) still resolve to the right
+    manager instead of falling through to "Unknown / Not Mapped". Owner exceptions
+    are excluded from the fuzzy pool so no one snaps onto the owner.
+
+    Returns (df_with_managers, resolved) where ``resolved`` maps badge name → AD key
+    for every row that matched via the fuzzy/last-initial fallback (for surfacing)."""
+    mgr_lookup = manager_df.copy()
+    mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
+    mgr_lookup = mgr_lookup.drop_duplicates(subset=["_key"])
+
+    ad_keys       = list(mgr_lookup["_key"])
+    ad_key_set    = set(ad_keys)
+    fallback_keys = [k for k in ad_keys if k not in OWNER_EXCEPTIONS]
+
+    resolved = {}
+
+    def _resolve(name):
+        k = _name_key(name)
+        if k in ad_key_set:
+            return k
+        close = difflib.get_close_matches(k, fallback_keys, n=1, cutoff=0.82)
+        match = close[0] if close else _last_first_initial_match(k, fallback_keys)
+        if match:
+            resolved[name] = match
+        return match
+
+    df = df.copy()
+    df["_match_key"] = df["_name"].apply(_resolve)
+    df = df.merge(
+        mgr_lookup[["_key", "Manager", "Manager Email"]].rename(columns={"_key": "_match_key"}),
+        on="_match_key", how="left",
+    ).drop(columns=["_match_key"])
+    df["Manager"] = df["Manager"].fillna("Unknown / Not Mapped")
+    df["Manager Email"] = df["Manager Email"].fillna("")
+    return df, resolved
 
 
 st.title("🏢 Attendance Tracker")
@@ -446,16 +495,11 @@ manager_df = st.session_state.get("manager_df")
 has_managers = manager_df is not None and not manager_df.empty
 
 if has_managers:
-    # Normalised-name merge: drops middle initials, numeric suffixes, duplicate tokens
-    mgr_lookup = manager_df.copy()
-    mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
-    unique_days["_key"] = unique_days["_name"].apply(_name_key)
-    unique_days = unique_days.merge(
-        mgr_lookup[["_key", "Manager", "Manager Email"]],
-        on="_key", how="left"
-    ).drop(columns=["_key"])
-    unique_days["Manager"] = unique_days["Manager"].fillna("Unknown / Not Mapped")
-    unique_days["Manager Email"] = unique_days["Manager Email"].fillna("")
+    # Exact normalised-name merge, then fuzzy / last-name+first-initial fallback so
+    # badge-log misspellings (Jim/James, Warma/Varma, Arhun/Arjun) still find a manager.
+    unique_days, _mgr_resolved = _merge_managers(unique_days, manager_df)
+    if _mgr_resolved:
+        st.session_state["manager_fuzzy_matched"] = _mgr_resolved
 
 # ─── Zero-attendance: DataWatch holders with no badge swipes in range ─────────
 import difflib as _difflib
@@ -502,15 +546,7 @@ if _datawatch_names:
                 zero_df.loc[_cs_mask, "Total Weekdays"] = _cs_eff
                 zero_df.loc[_cs_mask, "Days Absent"]    = _cs_eff
         if has_managers:
-            mgr_lookup_z = manager_df.copy()
-            mgr_lookup_z["_key"] = mgr_lookup_z["Employee"].apply(_name_key)
-            zero_df["_key"] = zero_df["_name"].apply(_name_key)
-            zero_df = zero_df.merge(
-                mgr_lookup_z[["_key", "Manager", "Manager Email"]],
-                on="_key", how="left"
-            ).drop(columns=["_key"])
-            zero_df["Manager"] = zero_df["Manager"].fillna("Unknown / Not Mapped")
-            zero_df["Manager Email"] = zero_df["Manager Email"].fillna("")
+            zero_df, _ = _merge_managers(zero_df, manager_df)
 
 # ─── Summary Cards ────────────────────────────────────────────────────────────
 if sp_err := st.session_state.get("sharepoint_error"):
@@ -531,6 +567,12 @@ if fuzzy := st.session_state.get("fuzzy_matched"):
         st.caption("These SharePoint names were close enough to a badge log name to be treated as the same person. Review for accuracy.")
         for sp_name, badge_name in fuzzy.items():
             st.write(f"SharePoint: **{sp_name}** → Badge log: **{badge_name}**")
+
+if mgr_fuzzy := st.session_state.get("manager_fuzzy_matched"):
+    with st.expander(f"🔗 {len(mgr_fuzzy)} name(s) matched to a manager by fuzzy / nickname fallback", expanded=False):
+        st.caption("Badge-log names that didn't match Azure AD exactly but were close enough to inherit that person's manager (e.g. Jim→James, Warma→Varma, Arhun→Arjun). Review for accuracy.")
+        for badge_name, ad_key in mgr_fuzzy.items():
+            st.write(f"Badge log: **{badge_name}** → Azure AD: **{ad_key}**")
 
 st.subheader("Summary")
 m1, m2, m3, m4, m5 = st.columns(5)
