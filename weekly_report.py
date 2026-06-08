@@ -1436,6 +1436,30 @@ def main():
         badge_excel, start, end, manager_df, datawatch_names
     )
 
+    # VERIFY ONLY: print manager-mapping diagnostics and stop before any report
+    # upload / email / Teams post. Used to sanity-check that DataWatch badge names
+    # line up with Azure AD without producing a report. (_merge_managers already
+    # logged any fuzzy/nickname fallback matches above.)
+    if os.environ.get("VERIFY_ONLY", "false").lower() == "true":
+        log.info(f"VERIFY: {len(unique_days)} people processed for {start} → {end}")
+        unmapped = sorted(
+            unique_days.loc[unique_days["Manager"] == "Unknown / Not Mapped", "_name"].unique()
+        )
+        if unmapped:
+            log.warning(f"VERIFY: {len(unmapped)} badge name(s) match NO Azure AD record:")
+            for n in unmapped:
+                log.warning(f"VERIFY:   - {n!r}")
+        else:
+            log.info("VERIFY: every badge name matched an Azure AD record ✓")
+        no_mgr = sorted(
+            unique_days.loc[unique_days["Manager"] == "No Manager", "_name"].unique()
+        )
+        if no_mgr:
+            log.info(f"VERIFY: {len(no_mgr)} matched in AD but have NO manager set in AD: "
+                     + ", ".join(repr(n) for n in no_mgr))
+        log.info("=== Verify-only run complete (no report sent) ===")
+        return
+
     # 6. Generate Excel report
     filename     = f"Attendance_Report_{start}_{end}.xlsx"
     report_bytes = generate_report_excel(unique_days, zero_df, start, end)
