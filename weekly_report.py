@@ -231,9 +231,14 @@ def _canonical_name_map(names, manager_df: pd.DataFrame) -> dict:
 
     This fixes the *day-count* half of Bug 12: split spellings are summed into one
     row instead of split across two (Pankaj's 'Honey was in 4 days, 1 reflected').
-    The looser last-name+first-initial fallback is deliberately NOT used here — too
-    aggressive for a step that moves headline day counts; fuzzy 0.82 already covers
-    the documented typo-variants."""
+
+    A GUARDED last-name+first-initial second pass also folds a nickname spelling that
+    difflib 0.82 can't reach ('Jim Rader' scores 0.80 vs 'James Rader') — but ONLY
+    onto a real Azure AD person who ALSO swiped that week under the exact spelling, and
+    never onto an owner exception. So day counts move only inside a genuine same-week
+    split, and a near-namesake can't snap onto the owner (Aaniya !-> Amit). Residual
+    risk: two different people sharing last name + first initial where one is missing
+    from AD could still merge — the name-audit surfaces such cases as 'unmapped'."""
     if manager_df is None or manager_df.empty:
         return {}
     mgr_lookup = manager_df.copy()
@@ -254,6 +259,20 @@ def _canonical_name_map(names, manager_df: pd.DataFrame) -> dict:
             gkey, exact = (close[0] if close else k), False
         groups.setdefault(gkey, []).append(n)
         is_exact[n] = exact
+
+    # Guarded nickname fold: a still-unmatched spelling (no exact, no fuzzy) joins a
+    # real AD person who appears EXACT this week and shares last name + first initial
+    # ('Jim Rader' -> 'James Rader'). Owner keys are never anchors (Aaniya !-> Amit).
+    anchor_keys = [g for g, ms in groups.items()
+                   if g not in OWNER_EXCEPTIONS and any(is_exact[m] for m in ms)]
+    for gkey in [g for g, ms in groups.items() if len(ms) == 1]:
+        m = groups[gkey][0]
+        if is_exact[m] or gkey != _name_key(m):
+            continue                                   # only truly-unmatched spellings
+        cand = _last_first_initial_match(_name_key(m), anchor_keys)
+        if cand and cand != gkey:
+            groups[cand].append(m)
+            del groups[gkey]
 
     canon: dict = {}
     for members in groups.values():
@@ -586,10 +605,11 @@ def process_attendance(
     datawatch_names: set,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int, dict]:
     """
-    Returns (unique_days_df, zero_attendance_df, total_weekdays, merged_spellings).
-    ``merged_spellings`` maps each remapped badge spelling → the kept spelling for
-    people who were logged under more than one name that week (empty when the source
-    was clean). Mirrors the processing logic in attendance_app.py.
+    Returns (unique_days_df, zero_attendance_df, total_weekdays, merged_spellings,
+    junk_active). ``merged_spellings`` maps each remapped badge spelling → the kept
+    spelling for people logged under more than one name that week (empty when clean).
+    ``junk_active`` lists spare/junk fobs that swiped — filtered out of the report but
+    surfaced for the name-audit. Mirrors the processing logic in attendance_app.py.
     """
     df_raw = pd.read_excel(io.BytesIO(excel_bytes))
     log.info(f"Badge log loaded: {len(df_raw):,} rows, columns: {list(df_raw.columns)}")
@@ -639,9 +659,17 @@ def process_attendance(
     df = df[(df["_date"] >= start) & (df["_date"] <= end)]
     df = df[pd.to_datetime(df["_date"]).dt.dayofweek < 5]
 
-    # Exclude default non-employee names and anything starting with "guest"
+    # Exclude default non-employee names, "guest*", and junk/spare fobs. A spare
+    # (spare/lost/inventory/handy) that actually swiped must NOT appear as a person in
+    # the report; it's captured in junk_active so the name-audit can still flag it for
+    # recall (e.g. 'Spare Mitchel Office'). This is the main-path half of the junk
+    # filter that previously only ran in the zero-attendance branch.
     _name_lower = df["_name"].str.strip().str.lower()
-    df = df[~(_name_lower.isin(DEFAULT_EXCLUDE_NAMES) | _name_lower.str.startswith("guest"))]
+    _name_junk  = df["_name"].apply(_is_junk_badge_name)
+    junk_active = sorted(df.loc[_name_junk, "_name"].unique())
+    df = df[~(_name_lower.isin(DEFAULT_EXCLUDE_NAMES)
+              | _name_lower.str.startswith("guest")
+              | _name_junk)]
 
     total_weekdays = count_weekdays(start, end)
 
@@ -748,7 +776,7 @@ def process_attendance(
         f"({int((unique_days['Attendance %'] == 0).sum())} zero-attendance), "
         f"{total_weekdays} weekdays"
     )
-    return unique_days, pd.DataFrame(), total_weekdays, merged_spellings
+    return unique_days, pd.DataFrame(), total_weekdays, merged_spellings, junk_active
 
 
 # ── Step 6: Generate Excel report ─────────────────────────────────────────────
@@ -1488,22 +1516,24 @@ def post_to_teams_chat_webhook(
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def collect_name_audit(unique_days, manager_df, merged_spellings: dict) -> dict:
+def collect_name_audit(unique_days, manager_df, merged_spellings: dict,
+                       junk_active=None) -> dict:
     """Categorise this week's badge names into source-correction buckets.
 
     Mirrors the resolution order used by _merge_managers so the audit agrees with
     the report. Buckets:
       • typos       — badge name matched Azure AD only via fuzzy/last-initial
                        (auto-corrected in the report, still wrong at the source:
-                       'Arhun Kesiraju'→'Arjun Kesiraju', 'Jim Rader'→'James Rader')
+                       'Arhun Kesiraju'→'Arjun Kesiraju' when only the typo swiped)
       • splits      — same person logged under >1 spelling that week (from
-                       merged_spellings: 'Honey Warma'→'Honey Varma')
+                       merged_spellings: 'Honey Warma'→'Honey Varma',
+                       'Jim Rader'→'James Rader' once both swiped)
       • unmapped    — badge name matched NO Azure AD record (bad typo, offboarded,
                        or a real person missing from AD, e.g. 'Aaniya Yadav')
-      • junk_active — a spare/lost/inventory/handy fob that actually swiped and so
-                       leaked into the report ('Spare Mitchel Office')
+      • junk_active — spare/lost/inventory/handy fobs that swiped (passed in from
+                       process_attendance, already filtered out of the report)
     Excluded/guest names and exact-AD matches are clean and produce nothing."""
-    typos, unmapped, junk_active = [], [], []
+    typos, unmapped = [], []
     if manager_df is not None and not manager_df.empty:
         ad_keys       = set(manager_df["Employee"].apply(_name_key))
         ad_display    = {_name_key(e): e for e in manager_df["Employee"]}
@@ -1513,11 +1543,8 @@ def collect_name_audit(unique_days, manager_df, merged_spellings: dict) -> dict:
 
     for name in unique_days["_name"].unique():
         nl = str(name).strip().lower()
-        if nl in DEFAULT_EXCLUDE_NAMES or nl.startswith("guest"):
-            continue
-        if _is_junk_badge_name(name):
-            junk_active.append(name)                      # junk fob with activity
-            continue
+        if nl in DEFAULT_EXCLUDE_NAMES or nl.startswith("guest") or _is_junk_badge_name(name):
+            continue                                      # junk already filtered upstream
         k = _name_key(name)
         if k in ad_keys:
             continue                                      # exact AD match — clean
@@ -1532,7 +1559,7 @@ def collect_name_audit(unique_days, manager_df, merged_spellings: dict) -> dict:
         "typos":       sorted(set(typos)),
         "splits":      dict(sorted(merged_spellings.items())),
         "unmapped":    sorted(set(unmapped)),
-        "junk_active": sorted(set(junk_active)),
+        "junk_active": sorted(set(junk_active or [])),
     }
 
 
@@ -1558,7 +1585,7 @@ def main():
     datawatch_names = fetch_datawatch_names(token, site_id) if site_id else set()
 
     # 5. Process attendance
-    unique_days, zero_df, total_weekdays, merged_spellings = process_attendance(
+    unique_days, zero_df, total_weekdays, merged_spellings, junk_active = process_attendance(
         badge_excel, start, end, manager_df, datawatch_names
     )
 
@@ -1567,7 +1594,7 @@ def main():
     # unmapped names, junk fobs with activity) while there is still time to fix
     # the source before Monday's report. Stops before any report/upload/Teams.
     if os.environ.get("NAME_AUDIT", "false").lower() == "true":
-        issues = collect_name_audit(unique_days, manager_df, merged_spellings)
+        issues = collect_name_audit(unique_days, manager_df, merged_spellings, junk_active)
         send_name_audit_email(start, end, issues)
         log.info("=== Name audit complete (no report sent) ===")
         return

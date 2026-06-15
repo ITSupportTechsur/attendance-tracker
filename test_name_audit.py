@@ -55,25 +55,31 @@ MANAGERS = pd.DataFrame([
 
 
 def _audit_from(rows, datawatch=None):
-    unique_days, _zero, _total, merged = wr.process_attendance(
+    unique_days, _zero, _total, merged, junk = wr.process_attendance(
         _badge_excel(rows), START, END, MANAGERS, datawatch or set())
-    return wr.collect_name_audit(unique_days, MANAGERS, merged), unique_days
+    return wr.collect_name_audit(unique_days, MANAGERS, merged, junk), unique_days
 
 
-def test_typos_surface_even_when_report_auto_maps_them():
-    """Arhun (fuzzy 0.93) and Jim->James (0.80, last-initial) both get the right
-    manager in the report, but BOTH must appear in the typos bucket for fixing."""
-    rows = [
-        _row("Arhun", "Kesiraju", date(2026, 6, 8)),
-        _row("Jim",   "Rader",    date(2026, 6, 9)),
-        _row("James", "Rader",    date(2026, 6, 10)),   # the correct, AD-exact spelling
-    ]
+def test_lone_typos_surface_in_typos_bucket():
+    """A typo whose AD-correct spelling did NOT swipe that week stays a one-off row and
+    is flagged as a typo: Arhun (fuzzy 0.93) and a lone Jim (last-initial, no James)."""
+    rows = [_row("Arhun", "Kesiraju", date(2026, 6, 8)),
+            _row("Jim",   "Rader",    date(2026, 6, 9))]
     audit, _ = _audit_from(rows)
     assert ("Arhun Kesiraju", "Arjun Kesiraju") in audit["typos"], audit["typos"]
     assert ("Jim Rader", "James Rader") in audit["typos"], audit["typos"]
-    # the AD-exact spelling is clean — it must NOT be flagged
-    assert all(b != "James Rader" for b, _ in audit["typos"])
+
+
+def test_nickname_with_twin_moves_to_splits_not_typos():
+    """When BOTH Jim and James swiped, the report folds them into one 'James Rader'
+    row, so the audit reports it as a SPLIT to consolidate — not a typo."""
+    rows = [_row("Jim",   "Rader", date(2026, 6, 8)),
+            _row("James", "Rader", date(2026, 6, 9))]
+    audit, unique_days = _audit_from(rows)
+    assert audit["splits"] == {"Jim Rader": "James Rader"}, audit["splits"]
+    assert all(b != "Jim Rader" for b, _ in audit["typos"]), audit["typos"]
     assert "James Rader" not in audit["unmapped"]
+    assert set(unique_days["_name"]) == {"James Rader"}, set(unique_days["_name"])
 
 
 def test_split_spellings_go_to_splits_not_typos():
@@ -87,16 +93,17 @@ def test_split_spellings_go_to_splits_not_typos():
 
 
 def test_unmapped_and_junk_and_clean():
-    """Aaniya (not in AD) -> unmapped; spare fob with a swipe -> junk_active;
-    the owner and an exact match produce nothing."""
+    """Aaniya (not in AD, doesn't fold onto owner) -> unmapped; spare fob with a swipe
+    -> junk_active (via the 5th return, already dropped from the report); owner and an
+    exact match produce nothing."""
     rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
             _row("Spare", "Mitchel Office", date(2026, 6, 9)),
             _row("Joe",   "Ghaleb", date(2026, 6, 10)),
             _row("Amit",  "Yadav",  date(2026, 6, 11))]
-    audit, _ = _audit_from(rows)
+    audit, unique_days = _audit_from(rows)
     assert "Aaniya Yadav" in audit["unmapped"], audit["unmapped"]
     assert "Spare Mitchel Office" in audit["junk_active"], audit["junk_active"]
-    # clean people appear in no bucket
+    assert "Spare Mitchel Office" not in set(unique_days["_name"]), "junk must not be a report row"
     flat = {n for n, _ in audit["typos"]} | set(audit["unmapped"]) | set(audit["junk_active"])
     assert "Joe Ghaleb" not in flat and "Amit Yadav" not in flat, flat
 
@@ -110,7 +117,8 @@ def test_clean_week_produces_nothing():
 
 
 if __name__ == "__main__":
-    test_typos_surface_even_when_report_auto_maps_them()
+    test_lone_typos_surface_in_typos_bucket()
+    test_nickname_with_twin_moves_to_splits_not_typos()
     test_split_spellings_go_to_splits_not_typos()
     test_unmapped_and_junk_and_clean()
     test_clean_week_produces_nothing()

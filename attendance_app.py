@@ -148,8 +148,10 @@ def _canonical_name_map(names, manager_df):
     genuinely split group the kept spelling is the one whose key exactly matches
     Azure AD if present (so 'Honey Warma' + 'Honey Varma' both show the correct
     'Honey Varma'), else the most frequent spelling. Returns {badge_name: kept_name}
-    for the spellings that change only. The looser last-name+first-initial fallback is
-    intentionally not used here — too aggressive for a step that moves day counts."""
+    for the spellings that change only. A guarded last-name+first-initial second pass
+    also folds a nickname spelling difflib 0.82 can't reach ('Jim Rader' 0.80 ->
+    'James Rader') onto a real AD person who ALSO swiped exact that week — owner keys
+    are never anchors (Aaniya !-> Amit)."""
     if manager_df is None or manager_df.empty:
         return {}
     mgr_lookup = manager_df.copy()
@@ -170,6 +172,20 @@ def _canonical_name_map(names, manager_df):
             gkey, exact = (close[0] if close else k), False
         groups.setdefault(gkey, []).append(n)
         is_exact[n] = exact
+
+    # Guarded nickname fold: a still-unmatched spelling (no exact, no fuzzy) joins a
+    # real AD person who appears EXACT this week and shares last name + first initial
+    # ('Jim Rader' -> 'James Rader'). Owner keys are never anchors (Aaniya !-> Amit).
+    anchor_keys = [g for g, ms in groups.items()
+                   if g not in OWNER_EXCEPTIONS and any(is_exact[m] for m in ms)]
+    for gkey in [g for g, ms in groups.items() if len(ms) == 1]:
+        m = groups[gkey][0]
+        if is_exact[m] or gkey != _name_key(m):
+            continue                                   # only truly-unmatched spellings
+        cand = _last_first_initial_match(_name_key(m), anchor_keys)
+        if cand and cand != gkey:
+            groups[cand].append(m)
+            del groups[gkey]
 
     canon = {}
     for members in groups.values():
@@ -499,6 +515,15 @@ with st.expander("🚫 Exclude names from report", expanded=False):
     )
 excluded_names_set = {n.strip().lower() for n in excluded_input.splitlines() if n.strip()}
 st.session_state["excluded_names_list"] = [n for n in excluded_input.splitlines() if n.strip()]
+# Always drop junk/spare fobs (spare/lost/inventory/handy) that swiped — they must
+# not show as a person in the report (e.g. 'Spare Mitchel Office'). Previously this
+# only ran in the zero-attendance branch, so a spare with activity leaked through.
+_before_junk = df_weekdays["_name"].nunique()
+df_weekdays = df_weekdays[~df_weekdays["_name"].apply(_is_junk_badge_name)]
+_junk_removed = _before_junk - df_weekdays["_name"].nunique()
+if _junk_removed:
+    st.info(f"Dropped **{_junk_removed}** spare/junk fob(s) with activity from the report.")
+
 if excluded_names_set:
     before_excl = df_weekdays["_name"].nunique()
     _nl = df_weekdays["_name"].str.strip().str.lower()
