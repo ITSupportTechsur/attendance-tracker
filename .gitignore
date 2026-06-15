@@ -5,3 +5,6 @@ sample_report.xlsx
 __pycache__/
 *.pyc
 /tmp/
+
+# Raw Claude Code session transcripts — keep local only, never commit
+docs/sessions/transcripts/
