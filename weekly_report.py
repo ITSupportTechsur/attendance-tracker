@@ -117,6 +117,15 @@ def get_last_week_range():
     return last_monday, last_friday
 
 
+def get_current_week_range():
+    """Return (monday_of_this_week, today) — the in-progress work week.
+    Used by the mid-week NAME_AUDIT so swipes logged so far this week can be
+    name-checked while there is still time to correct DataWatch before Monday."""
+    today  = date.today()
+    monday = today - timedelta(days=today.weekday())   # Mon=0 … Sun=6
+    return monday, today
+
+
 def count_weekdays(start: date, end: date) -> int:
     return sum(
         1 for n in range((end - start).days + 1)
@@ -1479,9 +1488,61 @@ def post_to_teams_chat_webhook(
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def collect_name_audit(unique_days, manager_df, merged_spellings: dict) -> dict:
+    """Categorise this week's badge names into source-correction buckets.
+
+    Mirrors the resolution order used by _merge_managers so the audit agrees with
+    the report. Buckets:
+      • typos       — badge name matched Azure AD only via fuzzy/last-initial
+                       (auto-corrected in the report, still wrong at the source:
+                       'Arhun Kesiraju'→'Arjun Kesiraju', 'Jim Rader'→'James Rader')
+      • splits      — same person logged under >1 spelling that week (from
+                       merged_spellings: 'Honey Warma'→'Honey Varma')
+      • unmapped    — badge name matched NO Azure AD record (bad typo, offboarded,
+                       or a real person missing from AD, e.g. 'Aaniya Yadav')
+      • junk_active — a spare/lost/inventory/handy fob that actually swiped and so
+                       leaked into the report ('Spare Mitchel Office')
+    Excluded/guest names and exact-AD matches are clean and produce nothing."""
+    typos, unmapped, junk_active = [], [], []
+    if manager_df is not None and not manager_df.empty:
+        ad_keys       = set(manager_df["Employee"].apply(_name_key))
+        ad_display    = {_name_key(e): e for e in manager_df["Employee"]}
+        fallback_keys = [k for k in ad_keys if k not in OWNER_EXCEPTIONS]
+    else:
+        ad_keys, ad_display, fallback_keys = set(), {}, []
+
+    for name in unique_days["_name"].unique():
+        nl = str(name).strip().lower()
+        if nl in DEFAULT_EXCLUDE_NAMES or nl.startswith("guest"):
+            continue
+        if _is_junk_badge_name(name):
+            junk_active.append(name)                      # junk fob with activity
+            continue
+        k = _name_key(name)
+        if k in ad_keys:
+            continue                                      # exact AD match — clean
+        close = difflib.get_close_matches(k, fallback_keys, n=1, cutoff=0.82)
+        match = close[0] if close else _last_first_initial_match(k, fallback_keys)
+        if match:
+            typos.append((name, ad_display.get(match, match)))
+        else:
+            unmapped.append(name)
+
+    return {
+        "typos":       sorted(set(typos)),
+        "splits":      dict(sorted(merged_spellings.items())),
+        "unmapped":    sorted(set(unmapped)),
+        "junk_active": sorted(set(junk_active)),
+    }
+
+
 def main():
-    start, end = get_last_week_range()
-    log.info(f"=== Weekly Attendance Report  {start} → {end} ===")
+    if os.environ.get("NAME_AUDIT", "false").lower() == "true":
+        start, end = get_current_week_range()
+        log.info(f"=== Mid-week NAME AUDIT  {start} → {end} ===")
+    else:
+        start, end = get_last_week_range()
+        log.info(f"=== Weekly Attendance Report  {start} → {end} ===")
 
     # 1. Download badge log from D3000
     badge_excel = download_badge_excel(start, end)
@@ -1500,6 +1561,16 @@ def main():
     unique_days, zero_df, total_weekdays, merged_spellings = process_attendance(
         badge_excel, start, end, manager_df, datawatch_names
     )
+
+    # NAME AUDIT: mid-week, email the operator every badge name that needs
+    # correcting in DataWatch (typos auto-fixed by fuzzy match, split spellings,
+    # unmapped names, junk fobs with activity) while there is still time to fix
+    # the source before Monday's report. Stops before any report/upload/Teams.
+    if os.environ.get("NAME_AUDIT", "false").lower() == "true":
+        issues = collect_name_audit(unique_days, manager_df, merged_spellings)
+        send_name_audit_email(start, end, issues)
+        log.info("=== Name audit complete (no report sent) ===")
+        return
 
     # PRE-FLIGHT: email the operator a one-line split-spelling summary and stop
     # (no report / upload / Teams). Scheduled ~1h before the Monday report so the
@@ -1628,6 +1699,94 @@ def send_preflight_email(start: date, end: date, merged: dict) -> None:
             log.warning(f"Pre-flight email returned {resp.status_code}: {resp.text[:200]}")
     except Exception as exc:
         log.warning(f"Could not send pre-flight email: {exc}")
+
+
+def send_name_audit_email(start: date, end: date, issues: dict) -> None:
+    """Mid-week email to the operator listing every badge name to correct in
+    DataWatch before the week ends, grouped by issue type. 'Clean' when nothing
+    needs fixing. Recipient = ALERT_EMAIL, else REPORT_FROM_EMAIL (joe.ghaleb)."""
+    try:
+        to_addr = os.environ.get("ALERT_EMAIL", "").strip() or REPORT_FROM_EMAIL
+        if not to_addr:
+            log.warning("No ALERT_EMAIL/REPORT_FROM_EMAIL — skipping name-audit email.")
+            return
+
+        typos   = issues.get("typos", [])
+        splits  = issues.get("splits", {})
+        unmapped = issues.get("unmapped", [])
+        junk    = issues.get("junk_active", [])
+        total   = len(typos) + len(splits) + len(unmapped) + len(junk)
+
+        intro = (
+            f"<p>Mid-week name check for the in-progress week "
+            f"<b>{start} – {end}</b> (badge swipes logged so far).</p>"
+            f"<p>Fix these in <b>DataWatch</b> now so the rest of this week — and "
+            f"Monday's report — log under the correct, consistent name. (DataWatch "
+            f"stamps the name onto each swipe at swipe time, so a correction only "
+            f"affects swipes <i>after</i> it.)</p>"
+        )
+
+        if total == 0:
+            subject = f"✅ DataWatch name check: clean — week of {start}"
+            body = intro + (
+                "<p>✅ <b>No names need correcting.</b> Every badge name this week "
+                "matches Azure AD exactly and no spare/duplicate fobs are active.</p>"
+            )
+        else:
+            def sec(title, rows_html):
+                return f"<h3 style='margin:14px 0 4px'>{title}</h3><ul>{rows_html}</ul>" if rows_html else ""
+
+            typo_rows = "".join(
+                f"<li><code>{escape(b)}</code> &rarr; should be "
+                f"<code>{escape(a)}</code> <i>(in Azure AD)</i></li>"
+                for b, a in typos)
+            split_rows = "".join(
+                f"<li>same person logged twice: <code>{escape(b)}</code> &amp; "
+                f"<code>{escape(a)}</code> &rarr; consolidate to <code>{escape(a)}</code></li>"
+                for b, a in splits.items())
+            unmapped_rows = "".join(
+                f"<li><code>{escape(n)}</code> — not found in Azure AD "
+                f"(bad spelling, offboarded, or missing from AD)</li>"
+                for n in unmapped)
+            junk_rows = "".join(
+                f"<li><code>{escape(n)}</code> — spare/temporary fob that swiped; "
+                f"rename or recall it so it stops showing as a person</li>"
+                for n in junk)
+
+            subject = f"⚠️ DataWatch name check: {total} name(s) to correct — week of {start}"
+            body = (
+                intro
+                + sec("🔤 Typos — auto-corrected in the report, still wrong at the source", typo_rows)
+                + sec("👥 Split spellings — one person, two badge names this week", split_rows)
+                + sec("❓ Unmapped — no Azure AD match", unmapped_rows)
+                + sec("🏷️ Spare/temporary fobs with activity", junk_rows)
+                + "<p style='color:#555'>The report still maps typos/splits to the "
+                  "right person automatically — this list is so the <b>source</b> gets "
+                  "clean too and the names stop looking wrong.</p>"
+            )
+
+        token = get_graph_token()
+        payload = {
+            "message": {
+                "subject": subject,
+                "body": {"contentType": "HTML", "content": body},
+                "toRecipients": [{"emailAddress": {"address": to_addr}}],
+            },
+            "saveToSentItems": False,
+        }
+        resp = http_requests.post(
+            f"https://graph.microsoft.com/v1.0/users/{REPORT_FROM_EMAIL}/sendMail",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code == 202:
+            log.info(f"Name-audit emailed to {to_addr}: {total} item(s) "
+                     f"(typos={len(typos)} splits={len(splits)} "
+                     f"unmapped={len(unmapped)} junk={len(junk)})")
+        else:
+            log.warning(f"Name-audit email returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as exc:
+        log.warning(f"Could not send name-audit email: {exc}")
 
 
 def send_failure_alert(error_text: str, traceback_text: str) -> None:

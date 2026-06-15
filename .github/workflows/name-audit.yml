@@ -1,0 +1,58 @@
+name: Attendance Name Audit (mid-week)
+
+# Thursday mid-week check: pulls the in-progress week's badge log (Mon→today),
+# name-checks every swipe against Azure AD + the Hardware Asset list, and emails
+# the operator (joe.ghaleb) every badge name that needs correcting in DataWatch
+# BEFORE the week ends — typos auto-fixed by the report (Arhun->Arjun, Jim->James),
+# split spellings (Honey Warma), unmapped names (Aaniya), and spare fobs that
+# swiped (Spare Mitchel Office). Sends NOTHING to the 21 managers — no report,
+# no SharePoint upload, no Teams post.
+#
+# NOTE: GitHub's built-in cron is best-effort (can run late / skip). For guaranteed
+# firing, point an Azure Logic App at this workflow's workflow_dispatch (same pattern
+# as attendance-report-scheduler / attendance-preflight-scheduler) — see project notes.
+
+on:
+  schedule:
+    - cron: '0 13 * * 4'   # Thursdays 13:00 UTC (≈9:00 AM EDT)
+  workflow_dispatch:
+    inputs:
+      alert_email:
+        description: 'Override recipient for this run (test). Blank = ALERT_EMAIL secret, else REPORT_FROM_EMAIL (joe.ghaleb).'
+        required: false
+        default: ''
+
+jobs:
+  name-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt playwright
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run mid-week name audit
+        env:
+          DATAWATCH_USERNAME:  ${{ secrets.DATAWATCH_USERNAME }}
+          DATAWATCH_PASSWORD:  ${{ secrets.DATAWATCH_PASSWORD }}
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
+          # Required by weekly_report.py at import time even though the audit never
+          # emails the managers (it returns before the report send).
+          REPORT_TO_EMAILS:    ${{ secrets.REPORT_TO_EMAILS }}
+          # Manual override wins; else ALERT_EMAIL secret; else code falls back to
+          # REPORT_FROM_EMAIL (joe.ghaleb).
+          ALERT_EMAIL:         ${{ inputs.alert_email != '' && inputs.alert_email || secrets.ALERT_EMAIL }}
+          NAME_AUDIT: 'true'
+        run: python weekly_report.py
