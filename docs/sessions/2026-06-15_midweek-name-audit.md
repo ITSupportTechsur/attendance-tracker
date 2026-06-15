@@ -79,11 +79,14 @@ python3 /tmp/audit_pull.py && python3 /tmp/audit_reconcile.py
 ```
 
 ## What's NEXT (prioritized)
-1. **Azure Logic App `attendance-nameaudit-scheduler`** for guaranteed Thursday
-   firing — GitHub cron is unreliable. Clone `attendance-preflight-scheduler`
-   (rg-attendance-tracker, Recurrence Thu 13:00 UTC → POST `name-audit.yml/dispatches`
-   `{"ref":"main"}`, same GitHub PAT). NOTE: enabling fires one immediate run (extra email).
-2. **Fix the junk-fob leak** (separate from this): apply `_is_junk_badge_name` at the
+0. ~~**Azure Logic App `attendance-nameaudit-scheduler`** for guaranteed Thursday
+   firing~~ **DONE & verified 2026-06-15.** 3rd scheduler in rg-attendance-tracker
+   (eastus, Consumption, Enabled): Recurrence Thu 13:00 UTC → POST `name-audit.yml/dispatches`
+   `{"ref":"main"}`, same GitHub PAT. Enabling fired one immediate run (Logic App run
+   21:43:24 Succeeded → GitHub run `27578365254` Succeeded → emailed joe.ghaleb). Gotcha:
+   `--definition @file` needs the file wrapped `{"definition": <body>}` and the read-only
+   `evaluatedRecurrence` stripped. Nov: bump all 3 Logic Apps +1h for EST.
+1. **Fix the junk-fob leak** (separate from this): apply `_is_junk_badge_name` at the
    MAIN exclude step too (`weekly_report.py:635`, `attendance_app.py:505`), not just the
    zero-attendance path, so spares with activity (Spare Mitchel Office) stop leaking.
 3. **Tighten the day-count merge** so nicknames like Jim→James (0.80) collapse into
