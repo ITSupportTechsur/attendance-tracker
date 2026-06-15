@@ -288,6 +288,94 @@ def _canonical_name_map(names, manager_df: pd.DataFrame) -> dict:
 
 # ── Step 1: Download badge Excel from D3000 ───────────────────────────────────
 
+def _d3000_login(page) -> None:
+    """Log into D3000 DirectAccess (mirrors download_badge_excel's proven flow).
+    Leaves the page on /CardHolder/Index. Raises RuntimeError on failure."""
+    try:
+        page.goto(DATAWATCH_BASE_URL, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(2000)
+        page.wait_for_selector(
+            "input#UserName, input[name='UserName'], input[name='username'], input[type='text']",
+            timeout=30_000)
+        page.fill("input#UserName, input[name='UserName'], input[name='username'], input[type='text']",
+                  DATAWATCH_USERNAME)
+        page.click("input[value='Next'], button:has-text('Next'), input[type='submit']")
+        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(1500)
+        page.wait_for_selector("input[name='Password'], input[type='password']", timeout=30_000)
+        page.fill("input[name='Password'], input[type='password']", DATAWATCH_PASSWORD)
+        page.click("input[value='Log On'], button:has-text('Log On'), input[type='submit']")
+        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(3000)
+        if "LogOn" in page.url or page.url.rstrip("/") == DATAWATCH_BASE_URL.rstrip("/"):
+            page.wait_for_timeout(4000)
+    except Exception as exc:
+        page.screenshot(path="/tmp/d3000_login_debug.png", full_page=True)
+        raise RuntimeError(f"D3000 login failed: {exc}") from exc
+    log.info("Logged in to D3000 DirectAccess")
+
+
+def fetch_datawatch_cardholders() -> list:
+    """Pull the FULL Techsur cardholder roster from D3000 CardHolder/Index (every
+    provisioned badge, not just swipes). Returns a list of dicts:
+    {name, first, last, card, sitecode}. This is the 'in DataWatch system' source for
+    the 3-way name audit (DataWatch <-> Hardware list <-> Azure AD)."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page    = browser.new_context().new_page()
+        page.set_default_timeout(60_000)
+        _d3000_login(page)
+        page.goto(f"{DATAWATCH_BASE_URL}/CardHolder/Index", wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(2500)
+        # Select Techsur tenant + largest page size, then Search (form -> CardHolder/Search)
+        page.evaluate("""(tenantHint) => {
+            const t = document.getElementById('BDTenantPK');
+            if (t) { const o = Array.from(t.options).find(o => o.textContent.toLowerCase().includes(tenantHint));
+                     if (o) { t.value = o.value; t.dispatchEvent(new Event('change')); } }
+            const ps = document.getElementById('PageSize');
+            if (ps) { const big = Array.from(ps.options).map(o=>o.value).sort((a,b)=>(+b)-(+a))[0];
+                      if (big) { ps.value = big; ps.dispatchEvent(new Event('change')); } }
+        }""", "techsur")
+        btn = page.query_selector("#submit, input[value='Search'], button:has-text('Search')")
+        if btn:
+            btn.click()
+        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(4000)
+        rows = page.evaluate("""() => {
+            const tbls = Array.from(document.querySelectorAll('table'));
+            const tbl = tbls.map(t => [t, t.querySelectorAll('tr').length]).sort((a,b)=>b[1]-a[1])[0]?.[0];
+            if (!tbl) return {headers: [], rows: []};
+            const head = tbl.querySelector('thead tr') || tbl.querySelector('tr');
+            const headers = Array.from(head.querySelectorAll('th,td')).map(c=>c.textContent.trim().toLowerCase());
+            const body = Array.from(tbl.querySelectorAll('tr')).slice(1);
+            const out = body.map(r => Array.from(r.querySelectorAll('td')).map(c=>c.textContent.trim()));
+            return {headers, rows: out};
+        }""")
+        browser.close()
+
+    headers = rows.get("headers", [])
+    def col(*names):
+        for n in names:
+            if n in headers:
+                return headers.index(n)
+        return None
+    i_first, i_last = col("first name"), col("last name")
+    i_card, i_sc    = col("embossed"), col("s/c")
+    out = []
+    for cells in rows.get("rows", []):
+        if i_first is None or i_last is None or max(i_first, i_last) >= len(cells):
+            continue
+        first = cells[i_first].strip()
+        last  = cells[i_last].strip()
+        name  = f"{first} {last}".strip()
+        if not name:
+            continue
+        out.append({
+            "name": name, "first": first, "last": last,
+            "card":     cells[i_card] if i_card is not None and i_card < len(cells) else "",
+            "sitecode": cells[i_sc]   if i_sc   is not None and i_sc   < len(cells) else "",
+        })
+    log.info(f"Fetched {len(out)} DataWatch cardholders from D3000 roster")
+    return out
+
+
 def probe_cardholders() -> None:
     """ONE-OFF diagnostic (ROSTER_PROBE=true): log into D3000, open CardHolder/Index,
     and dump the cardholder-roster structure (headers, row sample, pagination, export
@@ -1650,10 +1738,78 @@ def collect_name_audit(unique_days, manager_df, merged_spellings: dict,
     }
 
 
+def collect_source_audit(datawatch_names, hardware_names, manager_df) -> dict:
+    """3-source reconciliation: DataWatch roster (D) <-> Hardware list (H) <-> Azure AD (A).
+    Flags every name present in D and/or H that doesn't line up across the systems —
+    the matrix Amit asked for:
+      • not_in_ad          — in D and/or H but NO Azure AD match (offboarded / typo /
+                             person missing from AD). Each item notes which inventories
+                             it's in + the closest AD name as a hint.
+      • in_dw_not_hardware — a real DataWatch badge that is NOT recorded in the Hardware
+                             list (asset inventory gap).
+      • in_hardware_not_dw — the Hardware list says they hold a card, but DataWatch has
+                             no such cardholder (stale/incorrect asset record).
+    Junk/spare/guest/placeholder names are skipped. A name consistent across all three
+    produces nothing. Matching is by normalised _name_key (middle names/suffixes folded);
+    a cross-system spelling difference therefore surfaces as a mismatch by design."""
+    def clean(names):
+        m = {}
+        for n in names or []:
+            s  = str(n).strip()
+            sl = s.lower()
+            if (not s or _is_junk_badge_name(s) or sl.startswith("guest")
+                    or sl in DEFAULT_EXCLUDE_NAMES or "will be deleted" in sl):
+                continue
+            m.setdefault(_name_key(s), s)        # key -> representative spelling
+        return m
+
+    d_by, h_by = clean(datawatch_names), clean(hardware_names)
+    if manager_df is not None and not manager_df.empty:
+        a_by = {}
+        for e in manager_df["Employee"]:
+            a_by.setdefault(_name_key(e), e)
+    else:
+        a_by = {}
+    a_keys = list(a_by)
+
+    not_in_ad, in_dw_not_hw, in_hw_not_dw = [], [], []
+    for key in sorted(set(d_by) | set(h_by)):
+        inD, inH, inA = key in d_by, key in h_by, key in a_by
+        name = d_by.get(key) or h_by.get(key)
+        if not inA:
+            close = difflib.get_close_matches(key, a_keys, n=1, cutoff=0.80)
+            not_in_ad.append({"name": name, "in_dw": inD, "in_hw": inH,
+                              "ad_suggestion": a_by[close[0]] if close else None})
+        elif inD and not inH:
+            in_dw_not_hw.append(name)
+        elif inH and not inD:
+            in_hw_not_dw.append(name)
+    return {
+        "not_in_ad":          sorted(not_in_ad, key=lambda x: x["name"]),
+        "in_dw_not_hardware": sorted(set(in_dw_not_hw)),
+        "in_hardware_not_dw": sorted(set(in_hw_not_dw)),
+    }
+
+
 def main():
     if os.environ.get("ROSTER_PROBE", "false").lower() == "true":
         probe_cardholders()
         log.info("=== Roster probe complete (diagnostic only) ===")
+        return
+
+    # SOURCE AUDIT: reconcile DataWatch roster <-> Hardware list <-> Azure AD and email
+    # the operator every name that doesn't line up across all three (no badge log needed).
+    if os.environ.get("SOURCE_AUDIT", "false").lower() == "true":
+        log.info("=== 3-Source NAME AUDIT (DataWatch <-> Hardware <-> Azure AD) ===")
+        token           = get_graph_token()
+        manager_df      = fetch_manager_df(token)
+        site_id         = get_sharepoint_site_id(token)
+        hardware_names  = fetch_datawatch_names(token, site_id) if site_id else set()
+        roster          = fetch_datawatch_cardholders()
+        datawatch_names = {c["name"] for c in roster}
+        issues = collect_source_audit(datawatch_names, hardware_names, manager_df)
+        send_source_audit_email(issues, len(datawatch_names), len(hardware_names))
+        log.info("=== Source audit complete (no report sent) ===")
         return
 
     if os.environ.get("NAME_AUDIT", "false").lower() == "true":
@@ -1906,6 +2062,78 @@ def send_name_audit_email(start: date, end: date, issues: dict) -> None:
             log.warning(f"Name-audit email returned {resp.status_code}: {resp.text[:200]}")
     except Exception as exc:
         log.warning(f"Could not send name-audit email: {exc}")
+
+
+def send_source_audit_email(issues: dict, n_dw: int, n_hw: int) -> None:
+    """Email the operator the 3-source reconciliation (DataWatch <-> Hardware <-> AD).
+    Recipient = ALERT_EMAIL, else REPORT_FROM_EMAIL (joe.ghaleb)."""
+    try:
+        to_addr = os.environ.get("ALERT_EMAIL", "").strip() or REPORT_FROM_EMAIL
+        if not to_addr:
+            log.warning("No ALERT_EMAIL/REPORT_FROM_EMAIL — skipping source-audit email.")
+            return
+
+        not_ad = issues.get("not_in_ad", [])
+        dw_nh  = issues.get("in_dw_not_hardware", [])
+        hw_nd  = issues.get("in_hardware_not_dw", [])
+        total  = len(not_ad) + len(dw_nh) + len(hw_nd)
+
+        intro = (
+            f"<p>Cross-system name check — <b>DataWatch roster</b> ({n_dw} cardholders) "
+            f"vs <b>Hardware list</b> ({n_hw} badges) vs <b>Azure AD</b>.</p>"
+        )
+        if total == 0:
+            subject = "✅ Source audit: DataWatch / Hardware / Azure AD all reconcile"
+            body = intro + "<p>✅ <b>Everything lines up.</b> No action needed.</p>"
+        else:
+            def sec(title, rows_html):
+                return f"<h3 style='margin:14px 0 4px'>{title}</h3><ul>{rows_html}</ul>" if rows_html else ""
+
+            def where(it):
+                tags = []
+                if it["in_dw"]: tags.append("DataWatch")
+                if it["in_hw"]: tags.append("Hardware list")
+                hint = (f" — closest AD name: <code>{escape(it['ad_suggestion'])}</code> "
+                        f"(likely a spelling fix)") if it.get("ad_suggestion") else \
+                       " — no close AD match (offboarded or never in AD)"
+                return (f"<li><code>{escape(it['name'])}</code> "
+                        f"<i>(in {', '.join(tags)})</i>{hint}</li>")
+
+            not_ad_rows = "".join(where(it) for it in not_ad)
+            dw_rows = "".join(f"<li><code>{escape(n)}</code></li>" for n in dw_nh)
+            hw_rows = "".join(f"<li><code>{escape(n)}</code></li>" for n in hw_nd)
+
+            subject = f"⚠️ Source audit: {total} name(s) don't reconcile across systems"
+            body = (
+                intro
+                + sec("❓ In DataWatch / Hardware but NOT in Azure AD", not_ad_rows)
+                + sec("🪪 In DataWatch but NOT recorded in the Hardware list", dw_rows)
+                + sec("📋 In the Hardware list but NO matching DataWatch cardholder", hw_rows)
+                + "<p style='color:#555'>Fix at the source: correct the spelling, add the "
+                  "person to Azure AD / the Hardware list, or remove the stale badge.</p>"
+            )
+
+        token = get_graph_token()
+        payload = {
+            "message": {
+                "subject": subject,
+                "body": {"contentType": "HTML", "content": body},
+                "toRecipients": [{"emailAddress": {"address": to_addr}}],
+            },
+            "saveToSentItems": False,
+        }
+        resp = http_requests.post(
+            f"https://graph.microsoft.com/v1.0/users/{REPORT_FROM_EMAIL}/sendMail",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code == 202:
+            log.info(f"Source-audit emailed to {to_addr}: {total} item(s) "
+                     f"(not_in_ad={len(not_ad)} dw_not_hw={len(dw_nh)} hw_not_dw={len(hw_nd)})")
+        else:
+            log.warning(f"Source-audit email returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as exc:
+        log.warning(f"Could not send source-audit email: {exc}")
 
 
 def send_failure_alert(error_text: str, traceback_text: str) -> None:

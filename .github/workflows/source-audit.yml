@@ -1,0 +1,44 @@
+name: Attendance Source Audit (3-source reconcile)
+
+# Reconciles the DataWatch cardholder roster <-> SharePoint Hardware list <-> Azure AD
+# and emails the operator (joe.ghaleb) every name that doesn't line up across all three:
+#   - in DataWatch/Hardware but not in Azure AD (offboarded / typo / missing)
+#   - in DataWatch but not recorded in the Hardware list
+#   - in the Hardware list but no matching DataWatch cardholder
+# Sends NOTHING to the managers — no report, no upload, no Teams.
+#
+# GitHub cron is best-effort; for guaranteed firing, point an Azure Logic App at this
+# workflow's dispatch (same pattern as attendance-nameaudit-scheduler).
+
+on:
+  schedule:
+    - cron: '30 13 * * 4'   # Thursdays 13:30 UTC, just after the name-audit
+  workflow_dispatch:
+    inputs:
+      alert_email:
+        description: 'Override recipient for this run (test). Blank = REPORT_FROM_EMAIL (joe.ghaleb).'
+        required: false
+        default: ''
+
+jobs:
+  source-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt playwright
+      - run: playwright install chromium --with-deps
+      - name: Run 3-source name audit
+        env:
+          DATAWATCH_USERNAME:  ${{ secrets.DATAWATCH_USERNAME }}
+          DATAWATCH_PASSWORD:  ${{ secrets.DATAWATCH_PASSWORD }}
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
+          REPORT_TO_EMAILS:    ${{ secrets.REPORT_TO_EMAILS }}
+          ALERT_EMAIL:         ${{ inputs.alert_email != '' && inputs.alert_email || secrets.ALERT_EMAIL }}
+          SOURCE_AUDIT: 'true'
+        run: python weekly_report.py
