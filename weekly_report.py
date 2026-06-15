@@ -376,93 +376,6 @@ def fetch_datawatch_cardholders() -> list:
     return out
 
 
-def probe_cardholders() -> None:
-    """ONE-OFF diagnostic (ROSTER_PROBE=true): log into D3000, open CardHolder/Index,
-    and dump the cardholder-roster structure (headers, row sample, pagination, export
-    link) so we can build fetch_datawatch_cardholders(). Read-only; emails nothing.
-    Login is duplicated here on purpose so this probe can't affect the live report."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        ctx     = browser.new_context(accept_downloads=True)
-        page    = ctx.new_page()
-        page.set_default_timeout(60_000)
-        # --- login (mirrors download_badge_excel) ---
-        page.goto(DATAWATCH_BASE_URL, wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(2000)
-        page.fill("input#UserName, input[name='UserName'], input[name='username'], input[type='text']",
-                  DATAWATCH_USERNAME)
-        page.click("input[value='Next'], button:has-text('Next'), input[type='submit']")
-        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(1500)
-        page.fill("input[name='Password'], input[type='password']", DATAWATCH_PASSWORD)
-        page.click("input[value='Log On'], button:has-text('Log On'), input[type='submit']")
-        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(3000)
-        log.info(f"ROSTER_PROBE: after login URL={page.url!r}")
-        # --- cardholder roster (needs tenant + search, like the History page) ---
-        page.goto(f"{DATAWATCH_BASE_URL}/CardHolder/Index", wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(2500)
-        log.info(f"ROSTER_PROBE: CardHolder page title={page.title()!r}")
-
-        # 1) dump the dropdown options + buttons/links so we know the tenant value + submit
-        meta = page.evaluate("""() => {
-            const sel = id => { const s=document.getElementById(id);
-                return s ? Array.from(s.options).map(o => ({v:o.value, t:o.textContent.trim()})) : null; };
-            return {
-              tenant:   sel('BDTenantPK'),
-              pageSize: sel('PageSize'),
-              buttons:  Array.from(document.querySelectorAll("button, input[type=submit], input[type=button]"))
-                          .map(b => ({t:(b.textContent||b.value||'').trim(), id:b.id})),
-              forms:    Array.from(document.querySelectorAll('form')).map(f => ({action:f.action, id:f.id})),
-            };
-        }""")
-        log.info("ROSTER_PROBE: tenantOptions=%s" % (meta.get("tenant"),))
-        log.info("ROSTER_PROBE: pageSizeOptions=%s" % (meta.get("pageSize"),))
-        log.info("ROSTER_PROBE: buttons=%s" % (meta.get("buttons"),))
-        log.info("ROSTER_PROBE: forms=%s" % (meta.get("forms"),))
-
-        # 2) select the Techsur tenant + largest page size, then submit/search
-        try:
-            page.evaluate("""(tenantHint) => {
-                const t = document.getElementById('BDTenantPK');
-                if (t) { const o = Array.from(t.options).find(o => o.textContent.toLowerCase().includes(tenantHint));
-                         if (o) { t.value = o.value; t.dispatchEvent(new Event('change')); } }
-                const ps = document.getElementById('PageSize');
-                if (ps) { const big = Array.from(ps.options).map(o=>o.value).sort((a,b)=>(+b)-(+a))[0];
-                          if (big) { ps.value = big; ps.dispatchEvent(new Event('change')); } }
-            }""", "techsur")
-            for seltext in ["Search By Tenant", "Search", "Go", "Submit", "Find"]:
-                btn = page.query_selector(f"input[value='{seltext}'], button:has-text('{seltext}')")
-                if btn:
-                    log.info(f"ROSTER_PROBE: clicking {seltext!r}")
-                    btn.click(); break
-            page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(4000)
-        except Exception as exc:
-            log.info("ROSTER_PROBE: tenant/search step note: %s" % exc)
-
-        # 3) dump the table now that it should be populated
-        info = page.evaluate("""() => {
-            const out = {};
-            const tbls = Array.from(document.querySelectorAll('table'));
-            out.tableCount = tbls.length;
-            const tbl = tbls.map(t => [t, t.querySelectorAll('tr').length]).sort((a,b)=>b[1]-a[1])[0]?.[0];
-            if (tbl) {
-                const head = tbl.querySelector('thead tr') || tbl.querySelector('tr');
-                out.headers = head ? Array.from(head.querySelectorAll('th,td')).map(c=>c.textContent.trim()) : [];
-                out.rowCount = tbl.querySelectorAll('tr').length;
-                out.sampleRows = Array.from(tbl.querySelectorAll('tr')).slice(1,6)
-                                  .map(r => Array.from(r.querySelectorAll('td')).map(c=>c.textContent.trim()));
-            }
-            out.exportLink = (Array.from(document.querySelectorAll('a'))
-                .find(a => /export/i.test(a.textContent)) || {}).href || null;
-            return out;
-        }""")
-        log.info("ROSTER_PROBE: tableCount=%s rowCount=%s" % (info.get("tableCount"), info.get("rowCount")))
-        log.info("ROSTER_PROBE: headers=%s" % (info.get("headers"),))
-        for i, r in enumerate(info.get("sampleRows") or []):
-            log.info("ROSTER_PROBE: row[%d]=%s" % (i, r))
-        log.info("ROSTER_PROBE: exportLink=%s" % (info.get("exportLink"),))
-        browser.close()
-
-
 def download_badge_excel(start: date, end: date) -> bytes:
     """Use Playwright (headless Chromium) to log in and export the History Excel."""
     log.info(f"Downloading D3000 badge log  {start} → {end}")
@@ -1792,11 +1705,6 @@ def collect_source_audit(datawatch_names, hardware_names, manager_df) -> dict:
 
 
 def main():
-    if os.environ.get("ROSTER_PROBE", "false").lower() == "true":
-        probe_cardholders()
-        log.info("=== Roster probe complete (diagnostic only) ===")
-        return
-
     # SOURCE AUDIT: reconcile DataWatch roster <-> Hardware list <-> Azure AD and email
     # the operator every name that doesn't line up across all three (no badge log needed).
     if os.environ.get("SOURCE_AUDIT", "false").lower() == "true":
