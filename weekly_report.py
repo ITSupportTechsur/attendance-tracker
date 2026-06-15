@@ -288,6 +288,60 @@ def _canonical_name_map(names, manager_df: pd.DataFrame) -> dict:
 
 # ── Step 1: Download badge Excel from D3000 ───────────────────────────────────
 
+def probe_cardholders() -> None:
+    """ONE-OFF diagnostic (ROSTER_PROBE=true): log into D3000, open CardHolder/Index,
+    and dump the cardholder-roster structure (headers, row sample, pagination, export
+    link) so we can build fetch_datawatch_cardholders(). Read-only; emails nothing.
+    Login is duplicated here on purpose so this probe can't affect the live report."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx     = browser.new_context(accept_downloads=True)
+        page    = ctx.new_page()
+        page.set_default_timeout(60_000)
+        # --- login (mirrors download_badge_excel) ---
+        page.goto(DATAWATCH_BASE_URL, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(2000)
+        page.fill("input#UserName, input[name='UserName'], input[name='username'], input[type='text']",
+                  DATAWATCH_USERNAME)
+        page.click("input[value='Next'], button:has-text('Next'), input[type='submit']")
+        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(1500)
+        page.fill("input[name='Password'], input[type='password']", DATAWATCH_PASSWORD)
+        page.click("input[value='Log On'], button:has-text('Log On'), input[type='submit']")
+        page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(3000)
+        log.info(f"ROSTER_PROBE: after login URL={page.url!r}")
+        # --- cardholder roster ---
+        page.goto(f"{DATAWATCH_BASE_URL}/CardHolder/Index", wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(3000)
+        log.info(f"ROSTER_PROBE: CardHolder page title={page.title()!r} URL={page.url!r}")
+        info = page.evaluate("""() => {
+            const out = {};
+            const tbl = document.querySelector('table');
+            out.tableFound = !!tbl;
+            if (tbl) {
+                const head = tbl.querySelector('thead tr') || tbl.querySelector('tr');
+                out.headers = head ? Array.from(head.querySelectorAll('th,td')).map(c => c.textContent.trim()) : [];
+                const rows = Array.from(tbl.querySelectorAll('tbody tr')).slice(0, 5);
+                out.sampleRows = rows.map(r => Array.from(r.querySelectorAll('td')).map(c => c.textContent.trim()));
+                out.bodyRowCount = tbl.querySelectorAll('tbody tr').length;
+            }
+            out.exportLink = (Array.from(document.querySelectorAll('a'))
+                .find(a => a.textContent.toLowerCase().includes('export')) || {}).href || null;
+            out.pagingInputs = Array.from(document.querySelectorAll('input'))
+                .filter(i => /page|index|tenant|sitecode/i.test(i.name||i.id||''))
+                .map(i => ({id:i.id, name:i.name, value:i.value}));
+            out.tenantSelects = Array.from(document.querySelectorAll('select')).map(s => s.name||s.id);
+            return out;
+        }""")
+        log.info("ROSTER_PROBE: tableFound=%s bodyRowCount=%s" % (info.get("tableFound"), info.get("bodyRowCount")))
+        log.info("ROSTER_PROBE: headers=%s" % (info.get("headers"),))
+        for i, r in enumerate(info.get("sampleRows") or []):
+            log.info("ROSTER_PROBE: row[%d]=%s" % (i, r))
+        log.info("ROSTER_PROBE: exportLink=%s" % (info.get("exportLink"),))
+        log.info("ROSTER_PROBE: pagingInputs=%s" % (info.get("pagingInputs"),))
+        log.info("ROSTER_PROBE: tenantSelects=%s" % (info.get("tenantSelects"),))
+        browser.close()
+
+
 def download_badge_excel(start: date, end: date) -> bytes:
     """Use Playwright (headless Chromium) to log in and export the History Excel."""
     log.info(f"Downloading D3000 badge log  {start} → {end}")
@@ -1564,6 +1618,11 @@ def collect_name_audit(unique_days, manager_df, merged_spellings: dict,
 
 
 def main():
+    if os.environ.get("ROSTER_PROBE", "false").lower() == "true":
+        probe_cardholders()
+        log.info("=== Roster probe complete (diagnostic only) ===")
+        return
+
     if os.environ.get("NAME_AUDIT", "false").lower() == "true":
         start, end = get_current_week_range()
         log.info(f"=== Mid-week NAME AUDIT  {start} → {end} ===")
