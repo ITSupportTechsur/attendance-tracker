@@ -46,6 +46,9 @@ jobs:
           AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
+          # Required by weekly_report.py at import time even though the pre-flight
+          # never emails the managers (it returns before the report send).
+          REPORT_TO_EMAILS:    ${{ secrets.REPORT_TO_EMAILS }}
           # Manual override wins; else the ALERT_EMAIL secret; else code falls back
           # to REPORT_FROM_EMAIL.
           ALERT_EMAIL:         ${{ inputs.alert_email != '' && inputs.alert_email || secrets.ALERT_EMAIL }}
