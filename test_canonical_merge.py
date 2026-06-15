@@ -58,8 +58,11 @@ def test_split_spellings_are_summed_into_one_row():
     rows += [_row("Kamal", "Mostofa", date(2026, 6, 8)),             # control: single spelling
              _row("Kamal", "Mostofa", date(2026, 6, 9))]
 
-    unique_days, _zero, total = wr.process_attendance(
+    unique_days, _zero, total, merged = wr.process_attendance(
         _badge_excel(rows), START, END, MANAGERS, {"Honey Varma", "Kamal Mostofa"})
+
+    # the split is surfaced for the pre-flight email
+    assert merged == {"Honey Warma": "Honey Varma"}, f"unexpected merge map: {merged}"
 
     honey = unique_days[unique_days["_name"].str.contains("Honey", case=False)]
     assert len(honey) == 1, f"expected 1 Honey row, got {len(honey)}:\n{honey}"
@@ -77,7 +80,7 @@ def test_single_spelling_is_never_renamed_to_full_ad_name():
     changing anything'). Manager still resolves correctly."""
     rows = [_row("Daniel", "Thompson", d) for d in
             (date(2026, 6, 8), date(2026, 6, 9), date(2026, 6, 10))]
-    unique_days, _zero, _total = wr.process_attendance(
+    unique_days, _zero, _total, _merged = wr.process_attendance(
         _badge_excel(rows), START, END, MANAGERS, set())
     names = set(unique_days["_name"])
     assert "Daniel Thompson" in names, f"badge spelling must be kept, got {names}"
@@ -95,7 +98,7 @@ def test_owner_is_never_collapsed_into():
     ])
     rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
             _row("Amit",   "Yadav", date(2026, 6, 9))]
-    unique_days, _zero, _total = wr.process_attendance(
+    unique_days, _zero, _total, _merged = wr.process_attendance(
         _badge_excel(rows), START, END, mgrs, set())
     names = set(unique_days["_name"])
     assert "Aaniya Yadav" in names and "Amit Yadav" in names, \

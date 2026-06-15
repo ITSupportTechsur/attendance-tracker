@@ -575,10 +575,12 @@ def process_attendance(
     end: date,
     manager_df: pd.DataFrame,
     datawatch_names: set,
-) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+) -> tuple[pd.DataFrame, pd.DataFrame, int, dict]:
     """
-    Returns (unique_days_df, zero_attendance_df, total_weekdays).
-    Mirrors the processing logic in attendance_app.py.
+    Returns (unique_days_df, zero_attendance_df, total_weekdays, merged_spellings).
+    ``merged_spellings`` maps each remapped badge spelling → the kept spelling for
+    people who were logged under more than one name that week (empty when the source
+    was clean). Mirrors the processing logic in attendance_app.py.
     """
     df_raw = pd.read_excel(io.BytesIO(excel_bytes))
     log.info(f"Badge log loaded: {len(df_raw):,} rows, columns: {list(df_raw.columns)}")
@@ -637,12 +639,13 @@ def process_attendance(
     # Merge split spellings of the SAME person BEFORE counting days, so e.g.
     # 'Honey Warma' + 'Honey Varma' sum into one row instead of splitting the week
     # across two (the day-count half of Bug 12). Single-spelling names are untouched.
+    merged_spellings: dict = {}
     if not manager_df.empty:
-        canon = _canonical_name_map(df["_name"], manager_df)
-        if canon:
+        merged_spellings = _canonical_name_map(df["_name"], manager_df)
+        if merged_spellings:
             log.info("Merged split badge spellings before day-count: "
-                     + ", ".join(f"{b!r}→{a!r}" for b, a in canon.items()))
-            df["_name"] = df["_name"].map(lambda n: canon.get(n, n))
+                     + ", ".join(f"{b!r}→{a!r}" for b, a in merged_spellings.items()))
+            df["_name"] = df["_name"].map(lambda n: merged_spellings.get(n, n))
 
     # Attendance per person
     unique_days = (
@@ -736,7 +739,7 @@ def process_attendance(
         f"({int((unique_days['Attendance %'] == 0).sum())} zero-attendance), "
         f"{total_weekdays} weekdays"
     )
-    return unique_days, pd.DataFrame(), total_weekdays
+    return unique_days, pd.DataFrame(), total_weekdays, merged_spellings
 
 
 # ── Step 6: Generate Excel report ─────────────────────────────────────────────
@@ -1494,9 +1497,19 @@ def main():
     datawatch_names = fetch_datawatch_names(token, site_id) if site_id else set()
 
     # 5. Process attendance
-    unique_days, zero_df, total_weekdays = process_attendance(
+    unique_days, zero_df, total_weekdays, merged_spellings = process_attendance(
         badge_excel, start, end, manager_df, datawatch_names
     )
+
+    # PRE-FLIGHT: email the operator a one-line split-spelling summary and stop
+    # (no report / upload / Teams). Scheduled ~1h before the Monday report so the
+    # DataWatch source health is confirmed before it ships. 'none' = clean week;
+    # a list = the same person was logged under >1 name (the report still merges
+    # them, but a name you already corrected reappearing here means a 2nd credential).
+    if os.environ.get("PREFLIGHT", "false").lower() == "true":
+        send_preflight_email(start, end, merged_spellings)
+        log.info("=== Pre-flight check complete (no report sent) ===")
+        return
 
     # VERIFY ONLY: print manager-mapping diagnostics and stop before any report
     # upload / email / Teams post. Used to sanity-check that DataWatch badge names
@@ -1553,6 +1566,68 @@ def main():
         )
 
     log.info("=== Done ===")
+
+
+def send_preflight_email(start: date, end: date, merged: dict) -> None:
+    """Email the operator a one-line split-spelling summary before the Monday report.
+
+    'Clean' = DataWatch logged every person under a single name that week. A list =
+    the report had to merge split spellings (day counts are still correct). If a name
+    you already corrected in DataWatch keeps reappearing, that person likely has a
+    second badge/credential still under the old name — rename it at the source."""
+    try:
+        to_addr = os.environ.get("ALERT_EMAIL", "").strip() or REPORT_FROM_EMAIL
+        if not to_addr:
+            log.warning("No ALERT_EMAIL/REPORT_FROM_EMAIL — skipping pre-flight email.")
+            return
+
+        if merged:
+            rows = "".join(
+                f"<li><code>{escape(b)}</code> &rarr; <code>{escape(a)}</code></li>"
+                for b, a in sorted(merged.items())
+            )
+            subject = f"⚠️ Attendance pre-flight: {len(merged)} split spelling(s) — {start} to {end}"
+            body = (
+                f"<p>Pre-flight check for the week <b>{start} – {end}</b> "
+                f"(≈1 hour before the report).</p>"
+                f"<p><b>{len(merged)} split badge spelling(s)</b> were detected and merged "
+                f"by the report logic. Day counts are correct, but DataWatch logged the same "
+                f"person under more than one name:</p>"
+                f"<ul>{rows}</ul>"
+                f"<p>If a name you already corrected keeps appearing here, that person likely "
+                f"has a <b>second badge/credential</b> still under the old name — rename it in "
+                f"DataWatch to clear it at the source.</p>"
+            )
+        else:
+            subject = f"✅ Attendance pre-flight: clean — {start} to {end}"
+            body = (
+                f"<p>Pre-flight check for the week <b>{start} – {end}</b> "
+                f"(≈1 hour before the report).</p>"
+                f"<p>✅ <b>No split badge spellings</b> — every person was logged under a single "
+                f"name. The DataWatch source is clean and the report will be accurate.</p>"
+            )
+
+        token = get_graph_token()
+        payload = {
+            "message": {
+                "subject": subject,
+                "body": {"contentType": "HTML", "content": body},
+                "toRecipients": [{"emailAddress": {"address": to_addr}}],
+            },
+            "saveToSentItems": False,
+        }
+        resp = http_requests.post(
+            f"https://graph.microsoft.com/v1.0/users/{REPORT_FROM_EMAIL}/sendMail",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code == 202:
+            log.info(f"Pre-flight summary emailed to {to_addr}: "
+                     + (", ".join(f"{b}->{a}" for b, a in merged.items()) if merged else "clean ✓"))
+        else:
+            log.warning(f"Pre-flight email returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as exc:
+        log.warning(f"Could not send pre-flight email: {exc}")
 
 
 def send_failure_alert(error_text: str, traceback_text: str) -> None:

@@ -1,0 +1,53 @@
+name: Attendance Pre-flight Verify
+
+# Runs ~1 hour before the Monday report to confirm the DataWatch source is clean.
+# Processes last week's badge log and emails the operator a one-line summary of any
+# split badge spellings the report had to merge (e.g. 'Honey Warma'->'Honey Varma').
+# Sends NOTHING to the 21 managers — no report, no SharePoint upload, no Teams post.
+#
+# NOTE: GitHub's built-in cron is best-effort (can run late / skip). That's fine here
+# because this is an advisory check and the report itself always merges splits
+# correctly. For guaranteed firing, point an Azure Logic App at this workflow's
+# workflow_dispatch (same pattern as attendance-report-scheduler) — see project notes.
+
+on:
+  schedule:
+    - cron: '0 13 * * 1'   # Mondays 13:00 UTC — 1h before the 14:00 report
+  workflow_dispatch:
+    inputs:
+      alert_email:
+        description: 'Override recipient for this run (test). Blank = ALERT_EMAIL secret, else REPORT_FROM_EMAIL.'
+        required: false
+        default: ''
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt playwright
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run pre-flight split-spelling check
+        env:
+          DATAWATCH_USERNAME:  ${{ secrets.DATAWATCH_USERNAME }}
+          DATAWATCH_PASSWORD:  ${{ secrets.DATAWATCH_PASSWORD }}
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          REPORT_FROM_EMAIL:   ${{ secrets.REPORT_FROM_EMAIL }}
+          # Manual override wins; else the ALERT_EMAIL secret; else code falls back
+          # to REPORT_FROM_EMAIL.
+          ALERT_EMAIL:         ${{ inputs.alert_email != '' && inputs.alert_email || secrets.ALERT_EMAIL }}
+          PREFLIGHT: 'true'
+        run: python weekly_report.py
