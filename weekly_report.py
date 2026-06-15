@@ -309,36 +309,69 @@ def probe_cardholders() -> None:
         page.click("input[value='Log On'], button:has-text('Log On'), input[type='submit']")
         page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(3000)
         log.info(f"ROSTER_PROBE: after login URL={page.url!r}")
-        # --- cardholder roster ---
+        # --- cardholder roster (needs tenant + search, like the History page) ---
         page.goto(f"{DATAWATCH_BASE_URL}/CardHolder/Index", wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(3000)
-        log.info(f"ROSTER_PROBE: CardHolder page title={page.title()!r} URL={page.url!r}")
+        page.wait_for_timeout(2500)
+        log.info(f"ROSTER_PROBE: CardHolder page title={page.title()!r}")
+
+        # 1) dump the dropdown options + buttons/links so we know the tenant value + submit
+        meta = page.evaluate("""() => {
+            const sel = id => { const s=document.getElementById(id);
+                return s ? Array.from(s.options).map(o => ({v:o.value, t:o.textContent.trim()})) : null; };
+            return {
+              tenant:   sel('BDTenantPK'),
+              pageSize: sel('PageSize'),
+              buttons:  Array.from(document.querySelectorAll("button, input[type=submit], input[type=button]"))
+                          .map(b => ({t:(b.textContent||b.value||'').trim(), id:b.id})),
+              forms:    Array.from(document.querySelectorAll('form')).map(f => ({action:f.action, id:f.id})),
+            };
+        }""")
+        log.info("ROSTER_PROBE: tenantOptions=%s" % (meta.get("tenant"),))
+        log.info("ROSTER_PROBE: pageSizeOptions=%s" % (meta.get("pageSize"),))
+        log.info("ROSTER_PROBE: buttons=%s" % (meta.get("buttons"),))
+        log.info("ROSTER_PROBE: forms=%s" % (meta.get("forms"),))
+
+        # 2) select the Techsur tenant + largest page size, then submit/search
+        try:
+            page.evaluate("""(tenantHint) => {
+                const t = document.getElementById('BDTenantPK');
+                if (t) { const o = Array.from(t.options).find(o => o.textContent.toLowerCase().includes(tenantHint));
+                         if (o) { t.value = o.value; t.dispatchEvent(new Event('change')); } }
+                const ps = document.getElementById('PageSize');
+                if (ps) { const big = Array.from(ps.options).map(o=>o.value).sort((a,b)=>(+b)-(+a))[0];
+                          if (big) { ps.value = big; ps.dispatchEvent(new Event('change')); } }
+            }""", "techsur")
+            for seltext in ["Search By Tenant", "Search", "Go", "Submit", "Find"]:
+                btn = page.query_selector(f"input[value='{seltext}'], button:has-text('{seltext}')")
+                if btn:
+                    log.info(f"ROSTER_PROBE: clicking {seltext!r}")
+                    btn.click(); break
+            page.wait_for_load_state("domcontentloaded"); page.wait_for_timeout(4000)
+        except Exception as exc:
+            log.info("ROSTER_PROBE: tenant/search step note: %s" % exc)
+
+        # 3) dump the table now that it should be populated
         info = page.evaluate("""() => {
             const out = {};
-            const tbl = document.querySelector('table');
-            out.tableFound = !!tbl;
+            const tbls = Array.from(document.querySelectorAll('table'));
+            out.tableCount = tbls.length;
+            const tbl = tbls.map(t => [t, t.querySelectorAll('tr').length]).sort((a,b)=>b[1]-a[1])[0]?.[0];
             if (tbl) {
                 const head = tbl.querySelector('thead tr') || tbl.querySelector('tr');
-                out.headers = head ? Array.from(head.querySelectorAll('th,td')).map(c => c.textContent.trim()) : [];
-                const rows = Array.from(tbl.querySelectorAll('tbody tr')).slice(0, 5);
-                out.sampleRows = rows.map(r => Array.from(r.querySelectorAll('td')).map(c => c.textContent.trim()));
-                out.bodyRowCount = tbl.querySelectorAll('tbody tr').length;
+                out.headers = head ? Array.from(head.querySelectorAll('th,td')).map(c=>c.textContent.trim()) : [];
+                out.rowCount = tbl.querySelectorAll('tr').length;
+                out.sampleRows = Array.from(tbl.querySelectorAll('tr')).slice(1,6)
+                                  .map(r => Array.from(r.querySelectorAll('td')).map(c=>c.textContent.trim()));
             }
             out.exportLink = (Array.from(document.querySelectorAll('a'))
-                .find(a => a.textContent.toLowerCase().includes('export')) || {}).href || null;
-            out.pagingInputs = Array.from(document.querySelectorAll('input'))
-                .filter(i => /page|index|tenant|sitecode/i.test(i.name||i.id||''))
-                .map(i => ({id:i.id, name:i.name, value:i.value}));
-            out.tenantSelects = Array.from(document.querySelectorAll('select')).map(s => s.name||s.id);
+                .find(a => /export/i.test(a.textContent)) || {}).href || null;
             return out;
         }""")
-        log.info("ROSTER_PROBE: tableFound=%s bodyRowCount=%s" % (info.get("tableFound"), info.get("bodyRowCount")))
+        log.info("ROSTER_PROBE: tableCount=%s rowCount=%s" % (info.get("tableCount"), info.get("rowCount")))
         log.info("ROSTER_PROBE: headers=%s" % (info.get("headers"),))
         for i, r in enumerate(info.get("sampleRows") or []):
             log.info("ROSTER_PROBE: row[%d]=%s" % (i, r))
         log.info("ROSTER_PROBE: exportLink=%s" % (info.get("exportLink"),))
-        log.info("ROSTER_PROBE: pagingInputs=%s" % (info.get("pagingInputs"),))
-        log.info("ROSTER_PROBE: tenantSelects=%s" % (info.get("tenantSelects"),))
         browser.close()
 
 
