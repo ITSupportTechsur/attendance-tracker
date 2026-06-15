@@ -43,8 +43,10 @@ def _row(first, last, d):
 
 
 MANAGERS = pd.DataFrame([
-    {"Employee": "Honey Varma",  "Manager": "Pankaj Shishodia", "Manager Email": "pankaj@techsur.solutions"},
-    {"Employee": "Kamal Mostofa", "Manager": "Pankaj Shishodia", "Manager Email": "pankaj@techsur.solutions"},
+    {"Employee": "Honey Varma",   "Manager": "Pankaj Shishodia", "Manager Email": "pankaj@techsur.solutions"},
+    {"Employee": "Kamal Mostofa",  "Manager": "Pankaj Shishodia", "Manager Email": "pankaj@techsur.solutions"},
+    # AD carries a middle name; the badge log only ever says "Daniel Thompson".
+    {"Employee": "Daniel Joseph Thompson", "Manager": "Craig Park", "Manager Email": "craig@techsur.solutions"},
 ])
 
 
@@ -62,11 +64,27 @@ def test_split_spellings_are_summed_into_one_row():
     honey = unique_days[unique_days["_name"].str.contains("Honey", case=False)]
     assert len(honey) == 1, f"expected 1 Honey row, got {len(honey)}:\n{honey}"
     assert int(honey["Days Present"].iloc[0]) == 4, "Honey's 4 office days should be summed"
-    assert honey["_name"].iloc[0] == "Honey Varma", "should normalise to the Azure AD spelling"
+    assert honey["_name"].iloc[0] == "Honey Varma", "should keep the AD-correct spelling"
     assert honey["Manager"].iloc[0] == "Pankaj Shishodia"
     # control person is untouched
     kamal = unique_days[unique_days["_name"] == "Kamal Mostofa"]
     assert int(kamal["Days Present"].iloc[0]) == 2
+
+
+def test_single_spelling_is_never_renamed_to_full_ad_name():
+    """A person logged under ONE spelling keeps that exact name — we never expand
+    'Daniel Thompson' to the AD 'Daniel Joseph Thompson' ('know the name ... without
+    changing anything'). Manager still resolves correctly."""
+    rows = [_row("Daniel", "Thompson", d) for d in
+            (date(2026, 6, 8), date(2026, 6, 9), date(2026, 6, 10))]
+    unique_days, _zero, _total = wr.process_attendance(
+        _badge_excel(rows), START, END, MANAGERS, set())
+    names = set(unique_days["_name"])
+    assert "Daniel Thompson" in names, f"badge spelling must be kept, got {names}"
+    assert "Daniel Joseph Thompson" not in names, "must NOT expand to the full AD name"
+    daniel = unique_days[unique_days["_name"] == "Daniel Thompson"]
+    assert int(daniel["Days Present"].iloc[0]) == 3
+    assert daniel["Manager"].iloc[0] == "Craig Park", "manager still resolves via the AD match"
 
 
 def test_owner_is_never_collapsed_into():
@@ -86,5 +104,6 @@ def test_owner_is_never_collapsed_into():
 
 if __name__ == "__main__":
     test_split_spellings_are_summed_into_one_row()
+    test_single_spelling_is_never_renamed_to_full_ad_name()
     test_owner_is_never_collapsed_into()
     print("All canonical-merge regression tests passed ✅")

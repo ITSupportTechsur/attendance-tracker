@@ -137,34 +137,49 @@ def _merge_managers(df, manager_df):
 
 
 def _canonical_name_map(names, manager_df):
-    """Map each badge _name to its canonical Azure AD display name.
+    """Merge split badge spellings of ONE person onto a single display name —
+    *without* renaming anyone to their full Azure AD name.
 
-    Exact normalised-name match first, then a difflib fuzzy match (0.82); a name
-    that matches no AD record keeps its own spelling. Applied *before* day-counting,
-    this collapses split spellings of one person — e.g. 'Honey Varma' (1 day) +
-    'Honey Warma' (3 days) — into a single row so their office days are summed
-    instead of split across rows. Owner exceptions stay out of the fuzzy pool (same
-    guard as _merge_managers). The looser last-name+first-initial fallback is
-    intentionally not used here — too aggressive for a step that changes headline
-    day counts; fuzzy 0.82 already covers the documented typo-variants."""
+    Each badge name is grouped by the Azure AD identity it resolves to (exact
+    _name_key, then difflib fuzzy 0.82; owner exceptions excluded). Only groups with
+    more than one badge spelling are touched, so a person logged under a single
+    spelling is left exactly as-is — including a short badge name ('Daniel Thompson'
+    vs AD 'Daniel Joseph Thompson') or a consistent typo ('Arhun Kesiraju'). Within a
+    genuinely split group the kept spelling is the one whose key exactly matches
+    Azure AD if present (so 'Honey Warma' + 'Honey Varma' both show the correct
+    'Honey Varma'), else the most frequent spelling. Returns {badge_name: kept_name}
+    for the spellings that change only. The looser last-name+first-initial fallback is
+    intentionally not used here — too aggressive for a step that moves day counts."""
     if manager_df is None or manager_df.empty:
         return {}
     mgr_lookup = manager_df.copy()
     mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
-    mgr_lookup = mgr_lookup.drop_duplicates(subset=["_key"])
-    key_to_display = dict(zip(mgr_lookup["_key"], mgr_lookup["Employee"]))
-    ad_key_set = set(key_to_display)
+    ad_key_set = set(mgr_lookup["_key"])
     fuzzy_pool = [k for k in ad_key_set if k not in OWNER_EXCEPTIONS]
 
-    canon = {}
+    freq = pd.Series(list(names)).value_counts().to_dict()   # swipe count per spelling
+
+    groups = {}        # AD/group key -> [badge names]
+    is_exact = {}      # badge name -> exact AD-key match?
     for n in set(names):
         k = _name_key(n)
         if k in ad_key_set:
-            canon[n] = key_to_display[k]
-            continue
-        close = difflib.get_close_matches(k, fuzzy_pool, n=1, cutoff=0.82)
-        if close:
-            canon[n] = key_to_display[close[0]]
+            gkey, exact = k, True
+        else:
+            close = difflib.get_close_matches(k, fuzzy_pool, n=1, cutoff=0.82)
+            gkey, exact = (close[0] if close else k), False
+        groups.setdefault(gkey, []).append(n)
+        is_exact[n] = exact
+
+    canon = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue                                   # single spelling — leave as-is
+        pool = [m for m in members if is_exact[m]] or members
+        keep = max(pool, key=lambda m: freq.get(m, 0))  # prefer AD-correct, then dominant
+        for m in members:
+            if m != keep:
+                canon[m] = keep
     return canon
 
 
@@ -493,12 +508,12 @@ if excluded_names_set:
         st.info(f"Excluded **{removed}** name(s) from the report.")
 
 # ─── Attendance Stats ─────────────────────────────────────────────────────────
-# Collapse split spellings of the same person onto one canonical Azure AD name
-# BEFORE counting days, so e.g. 'Honey Varma' + 'Honey Warma' sum into one row
-# instead of splitting the week across two (the day-count half of Bug 12).
+# Merge split spellings of the SAME person BEFORE counting days, so e.g.
+# 'Honey Warma' + 'Honey Varma' sum into one row instead of splitting the week
+# across two (the day-count half of Bug 12). Single-spelling names are untouched.
 _mgr_df_canon = st.session_state.get("manager_df")
 if _mgr_df_canon is not None and not _mgr_df_canon.empty:
-    _canon = _canonical_name_map(df_weekdays["_name"].unique(), _mgr_df_canon)
+    _canon = _canonical_name_map(df_weekdays["_name"], _mgr_df_canon)
     if _canon:
         df_weekdays = df_weekdays.copy()
         df_weekdays["_name"] = df_weekdays["_name"].map(lambda n: _canon.get(n, n))
