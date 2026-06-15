@@ -58,7 +58,7 @@ def test_split_spellings_are_summed_into_one_row():
     rows += [_row("Kamal", "Mostofa", date(2026, 6, 8)),             # control: single spelling
              _row("Kamal", "Mostofa", date(2026, 6, 9))]
 
-    unique_days, _zero, total, merged = wr.process_attendance(
+    unique_days, _zero, total, merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, MANAGERS, {"Honey Varma", "Kamal Mostofa"})
 
     # the split is surfaced for the pre-flight email
@@ -80,7 +80,7 @@ def test_single_spelling_is_never_renamed_to_full_ad_name():
     changing anything'). Manager still resolves correctly."""
     rows = [_row("Daniel", "Thompson", d) for d in
             (date(2026, 6, 8), date(2026, 6, 9), date(2026, 6, 10))]
-    unique_days, _zero, _total, _merged = wr.process_attendance(
+    unique_days, _zero, _total, _merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, MANAGERS, set())
     names = set(unique_days["_name"])
     assert "Daniel Thompson" in names, f"badge spelling must be kept, got {names}"
@@ -98,15 +98,74 @@ def test_owner_is_never_collapsed_into():
     ])
     rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
             _row("Amit",   "Yadav", date(2026, 6, 9))]
-    unique_days, _zero, _total, _merged = wr.process_attendance(
+    unique_days, _zero, _total, _merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, mgrs, set())
     names = set(unique_days["_name"])
     assert "Aaniya Yadav" in names and "Amit Yadav" in names, \
         f"Aaniya and Amit must stay separate, got {names}"
 
 
+def test_nickname_folds_into_one_row_when_ad_twin_present():
+    """'Jim Rader' (0.80 vs 'James Rader', below the 0.82 fuzzy cutoff) must fold into
+    'James Rader' when BOTH swiped that week — one row, summed days, AD-correct kept."""
+    mgrs = pd.DataFrame([
+        {"Employee": "James Rader", "Manager": "Parag Matalia", "Manager Email": "parag@techsur.solutions"},
+    ])
+    rows = [_row("Jim",   "Rader", date(2026, 6, 8)),
+            _row("James", "Rader", date(2026, 6, 9)),
+            _row("James", "Rader", date(2026, 6, 10))]
+    unique_days, _zero, _total, merged, _junk = wr.process_attendance(
+        _badge_excel(rows), START, END, mgrs, set())
+    assert merged == {"Jim Rader": "James Rader"}, f"expected Jim->James fold, got {merged}"
+    rader = unique_days[unique_days["_name"].str.contains("Rader")]
+    assert len(rader) == 1 and rader["_name"].iloc[0] == "James Rader", rader["_name"].tolist()
+    assert int(rader["Days Present"].iloc[0]) == 3, "1+2 days must sum into one row"
+
+
+def test_lone_nickname_without_twin_is_not_folded():
+    """If only 'Jim Rader' swiped (no 'James Rader' that week), there is no anchor to
+    fold onto — the day count must NOT move; Jim stays his own row."""
+    mgrs = pd.DataFrame([
+        {"Employee": "James Rader", "Manager": "Parag Matalia", "Manager Email": "parag@techsur.solutions"},
+    ])
+    rows = [_row("Jim", "Rader", d) for d in (date(2026, 6, 8), date(2026, 6, 9))]
+    unique_days, _zero, _total, merged, _junk = wr.process_attendance(
+        _badge_excel(rows), START, END, mgrs, set())
+    assert merged == {}, f"lone nickname must not be folded, got {merged}"
+    assert set(unique_days["_name"]) == {"Jim Rader"}, set(unique_days["_name"])
+    assert unique_days["Manager"].iloc[0] == "Parag Matalia", "manager still resolves"
+
+
+def test_nickname_does_not_fold_onto_owner():
+    """A near-namesake NOT in AD must not snap onto the owner via the second pass:
+    'Aaniya Yadav' (absent from AD) + owner 'Amit Yadav' present -> stay separate."""
+    mgrs = pd.DataFrame([
+        {"Employee": "Amit Yadav", "Manager": "No Manager", "Manager Email": ""},
+    ])
+    rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
+            _row("Amit",   "Yadav", date(2026, 6, 9))]
+    unique_days, _zero, _total, merged, _junk = wr.process_attendance(
+        _badge_excel(rows), START, END, mgrs, set())
+    assert merged == {}, f"Aaniya must not fold onto the owner, got {merged}"
+    assert {"Aaniya Yadav", "Amit Yadav"} <= set(unique_days["_name"]), set(unique_days["_name"])
+
+
+def test_junk_fob_with_activity_is_dropped_and_surfaced():
+    """A spare fob that swiped is removed from the report but returned in junk_active."""
+    rows = [_row("Spare", "Mitchel Office", date(2026, 6, 8)),
+            _row("Kamal", "Mostofa", date(2026, 6, 9))]
+    unique_days, _zero, _total, _merged, junk = wr.process_attendance(
+        _badge_excel(rows), START, END, MANAGERS, set())
+    assert "Spare Mitchel Office" not in set(unique_days["_name"]), "spare must not be a person row"
+    assert "Spare Mitchel Office" in junk, f"spare must be surfaced in junk_active, got {junk}"
+
+
 if __name__ == "__main__":
     test_split_spellings_are_summed_into_one_row()
     test_single_spelling_is_never_renamed_to_full_ad_name()
     test_owner_is_never_collapsed_into()
+    test_nickname_folds_into_one_row_when_ad_twin_present()
+    test_lone_nickname_without_twin_is_not_folded()
+    test_nickname_does_not_fold_onto_owner()
+    test_junk_fob_with_activity_is_dropped_and_surfaced()
     print("All canonical-merge regression tests passed ✅")
