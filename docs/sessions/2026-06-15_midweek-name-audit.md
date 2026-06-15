@@ -78,6 +78,22 @@ gh workflow run name-audit.yml --ref main -f alert_email=ysfrangieh120@gmail.com
 python3 /tmp/audit_pull.py && python3 /tmp/audit_reconcile.py
 ```
 
+## Addendum — 3-Source Name Audit (DataWatch ↔ Hardware ↔ Azure AD)
+Owner asked to be notified whenever a name is in DataWatch and/or the Hardware list but
+doesn't reconcile across all three systems. Built:
+- `fetch_datawatch_cardholders()` — scrapes the FULL D3000 cardholder roster
+  (`/CardHolder/Index`: tenant=Techsur `de9a0850-…`, PageSize 500, Search `#submit`).
+  Reverse-engineered via a throwaway `ROSTER_PROBE` (now removed). ~122 cardholders.
+  Cols: Tenant·S/C·Embossed(card#)·First·Last·AL1-5·Valid Thru·Modified.
+- `collect_source_audit()` → buckets `not_in_ad` / `in_dw_not_hardware` /
+  `in_hardware_not_dw` (key-based, junk/placeholder skipped). `send_source_audit_email()`.
+  `SOURCE_AUDIT` mode + `.github/workflows/source-audit.yml` (Thu 13:30 UTC + dispatch).
+- `test_source_audit.py` (3 tests, green).
+- **Verified live:** run `27581170105` → 508 AD / 59 HW / 122 DW → emailed joe.ghaleb
+  **18 items (not_in_ad=3, dw_not_hw=14, hw_not_dw=1)**. The 122-vs-59 gap is real;
+  expect a Hardware-list reconciliation pass.
+- `_d3000_login()` extracted; `download_badge_excel` left untouched.
+
 ## What's NEXT (prioritized)
 0. ~~**Azure Logic App `attendance-nameaudit-scheduler`** for guaranteed Thursday
    firing~~ **DONE & verified 2026-06-15.** 3rd scheduler in rg-attendance-tracker
