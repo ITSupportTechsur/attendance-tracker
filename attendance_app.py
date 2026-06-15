@@ -136,6 +136,38 @@ def _merge_managers(df, manager_df):
     return df, resolved
 
 
+def _canonical_name_map(names, manager_df):
+    """Map each badge _name to its canonical Azure AD display name.
+
+    Exact normalised-name match first, then a difflib fuzzy match (0.82); a name
+    that matches no AD record keeps its own spelling. Applied *before* day-counting,
+    this collapses split spellings of one person — e.g. 'Honey Varma' (1 day) +
+    'Honey Warma' (3 days) — into a single row so their office days are summed
+    instead of split across rows. Owner exceptions stay out of the fuzzy pool (same
+    guard as _merge_managers). The looser last-name+first-initial fallback is
+    intentionally not used here — too aggressive for a step that changes headline
+    day counts; fuzzy 0.82 already covers the documented typo-variants."""
+    if manager_df is None or manager_df.empty:
+        return {}
+    mgr_lookup = manager_df.copy()
+    mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
+    mgr_lookup = mgr_lookup.drop_duplicates(subset=["_key"])
+    key_to_display = dict(zip(mgr_lookup["_key"], mgr_lookup["Employee"]))
+    ad_key_set = set(key_to_display)
+    fuzzy_pool = [k for k in ad_key_set if k not in OWNER_EXCEPTIONS]
+
+    canon = {}
+    for n in set(names):
+        k = _name_key(n)
+        if k in ad_key_set:
+            canon[n] = key_to_display[k]
+            continue
+        close = difflib.get_close_matches(k, fuzzy_pool, n=1, cutoff=0.82)
+        if close:
+            canon[n] = key_to_display[close[0]]
+    return canon
+
+
 st.title("🏢 Attendance Tracker")
 st.caption(f"Only counts badge events at **{OFFICE_ADDRESS}**. Weekdays only.")
 
@@ -461,6 +493,16 @@ if excluded_names_set:
         st.info(f"Excluded **{removed}** name(s) from the report.")
 
 # ─── Attendance Stats ─────────────────────────────────────────────────────────
+# Collapse split spellings of the same person onto one canonical Azure AD name
+# BEFORE counting days, so e.g. 'Honey Varma' + 'Honey Warma' sum into one row
+# instead of splitting the week across two (the day-count half of Bug 12).
+_mgr_df_canon = st.session_state.get("manager_df")
+if _mgr_df_canon is not None and not _mgr_df_canon.empty:
+    _canon = _canonical_name_map(df_weekdays["_name"].unique(), _mgr_df_canon)
+    if _canon:
+        df_weekdays = df_weekdays.copy()
+        df_weekdays["_name"] = df_weekdays["_name"].map(lambda n: _canon.get(n, n))
+
 unique_days = (
     df_weekdays.drop_duplicates(subset=["_name", "_date"])
     .groupby("_name")["_date"]

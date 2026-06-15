@@ -206,6 +206,41 @@ def _merge_managers(df: pd.DataFrame, manager_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _canonical_name_map(names, manager_df: pd.DataFrame) -> dict:
+    """Map each badge ``_name`` to its canonical Azure AD display name.
+
+    Exact normalised-name match first, then a difflib fuzzy match (0.82). A badge
+    name that resolves to no AD record keeps its own spelling. Applied *before*
+    day-counting, this collapses split spellings of one person — e.g. 'Honey Varma'
+    (1 day) + 'Honey Warma' (3 days) — onto a single canonical row so their office
+    days are summed instead of split. (Bug 12 fixed the *manager column* for these
+    misspellings via _merge_managers, but the day count was still grouped by raw
+    name.) Owner exceptions are kept out of the fuzzy pool (same guard as
+    _merge_managers) so nobody snaps onto the owner. The looser last-name+first-
+    initial fallback is deliberately NOT used here: it is too aggressive for a step
+    that changes the headline day counts (it would merge e.g. 'John Smith' /
+    'Jack Smith'); fuzzy 0.82 already covers every documented typo-variant."""
+    if manager_df is None or manager_df.empty:
+        return {}
+    mgr_lookup = manager_df.copy()
+    mgr_lookup["_key"] = mgr_lookup["Employee"].apply(_name_key)
+    mgr_lookup = mgr_lookup.drop_duplicates(subset=["_key"])
+    key_to_display = dict(zip(mgr_lookup["_key"], mgr_lookup["Employee"]))
+    ad_key_set = set(key_to_display)
+    fuzzy_pool = [k for k in ad_key_set if k not in OWNER_EXCEPTIONS]
+
+    canon = {}
+    for n in set(names):
+        k = _name_key(n)
+        if k in ad_key_set:
+            canon[n] = key_to_display[k]
+            continue
+        close = difflib.get_close_matches(k, fuzzy_pool, n=1, cutoff=0.82)
+        if close:
+            canon[n] = key_to_display[close[0]]
+    return canon
+
+
 # ── Step 1: Download badge Excel from D3000 ───────────────────────────────────
 
 def download_badge_excel(start: date, end: date) -> bytes:
@@ -581,6 +616,18 @@ def process_attendance(
     df = df[~(_name_lower.isin(DEFAULT_EXCLUDE_NAMES) | _name_lower.str.startswith("guest"))]
 
     total_weekdays = count_weekdays(start, end)
+
+    # Collapse split spellings of the same person onto one canonical Azure AD name
+    # BEFORE counting days, so e.g. 'Honey Varma' + 'Honey Warma' sum into one row
+    # instead of splitting the week across two (the day-count half of Bug 12).
+    if not manager_df.empty:
+        canon = _canonical_name_map(df["_name"].unique(), manager_df)
+        if canon:
+            merged = {b: a for b, a in canon.items() if b != a}
+            if merged:
+                log.info("Canonicalised split badge spellings before day-count: "
+                         + ", ".join(f"{b!r}→{a!r}" for b, a in merged.items()))
+            df["_name"] = df["_name"].map(lambda n: canon.get(n, n))
 
     # Attendance per person
     unique_days = (
