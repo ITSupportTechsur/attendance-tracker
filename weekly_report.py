@@ -73,6 +73,7 @@ DEFAULT_EXCLUDE_NAMES = {
     "rupinder yadav",       # removed from system per management
     "louie chen",           # removed per management
     "megan giesy",          # remote / Texas — not in office
+    "aaniya yadav",         # not a TechSur AD employee — excluded per management
 }
 
 # Employees who are intentionally without a manager (e.g. company owner).
@@ -1756,6 +1757,9 @@ def main():
         site_id         = get_sharepoint_site_id(token)
         hardware_names  = fetch_datawatch_names(token, site_id) if site_id else set()
         roster          = fetch_datawatch_cardholders()
+        for c in roster:                               # TEMP diagnostic: owner spellings
+            if "yadav" in c["name"].lower() or "amit" in c["name"].lower():
+                log.info(f"OWNER_DIAG: name={c['name']!r} sitecode={c['sitecode']!r} card={c['card']!r}")
         issues = collect_source_audit(roster, hardware_names, manager_df)
         send_source_audit_email(issues, len({c["name"] for c in roster}), len(hardware_names))
         log.info("=== Source audit complete (no report sent) ===")

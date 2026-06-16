@@ -32,6 +32,7 @@ DEFAULT_EXCLUDE_NAMES = [
     "Rupinder Yadav",       # removed from attendance tracker per management
     "Louie Chen",           # removed per management
     "Megan Giesy",          # remote / Texas — not in office
+    "Aaniya Yadav",         # not a TechSur AD employee — excluded per management
 ]
 
 # Employees intentionally without a manager (company owner). Excluded from the
