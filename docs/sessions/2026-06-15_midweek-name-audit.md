@@ -93,6 +93,11 @@ doesn't reconcile across all three systems. Built:
   **18 items (not_in_ad=3, dw_not_hw=14, hw_not_dw=1)**. The 122-vs-59 gap is real;
   expect a Hardware-list reconciliation pass.
 - `_d3000_login()` extracted; `download_badge_excel` left untouched.
+- **Bluetooth refinement (2026-06-16):** mobile/HID credentials (site codes 1205/1212)
+  have no physical card to inventory. `MOBILE_SITECODES` + roster site codes →
+  `in_dw_not_hardware` only flags physical-card holders. Live (run 27619521614):
+  62 mobile / 59 physical → buckets `not_in_ad=2, dw_not_hw=0, hw_not_dw=0` (the 14
+  prior "gaps" were all Bluetooth-only). Tuning dispatches go to ysfrangieh120@gmail.com.
 
 ## What's NEXT (prioritized)
 0. ~~**Azure Logic App `attendance-nameaudit-scheduler`** for guaranteed Thursday
