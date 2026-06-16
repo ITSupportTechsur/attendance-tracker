@@ -53,7 +53,8 @@ def test_clean_when_all_consistent():
     D = {"Ahmed Zaied", "Aashti Alam"}
     H = {"Ahmed Zaied", "Aashti Alam"}
     a = wr.collect_source_audit(D, H, AD)
-    assert a == {"not_in_ad": [], "in_dw_not_hardware": [], "in_hardware_not_dw": []}, a
+    assert a == {"not_in_ad": [], "in_dw_not_hardware": [], "in_hardware_not_dw": [],
+                 "unknown_sitecodes": {}}, a
 
 
 def test_middle_name_does_not_false_flag():
@@ -87,10 +88,31 @@ def test_name_only_input_treats_all_as_physical():
     assert a["in_dw_not_hardware"] == ["Ahmed Zaied"], a["in_dw_not_hardware"]
 
 
+def test_unrecognized_sitecode_is_surfaced_and_treated_as_physical():
+    """A brand-new site code (neither known-mobile nor known-physical) must be surfaced
+    for classification AND treated conservatively as physical, so a real card gap is
+    never silently skipped while the operator is told to classify the new code."""
+    ad = pd.DataFrame([{"Employee": "New Code Person", "Manager": "M", "Manager Email": "m@x.com"}])
+    roster = [{"name": "New Code Person", "sitecode": "1300"}]   # unknown code
+    a = wr.collect_source_audit(roster, set(), ad)               # empty Hardware list
+    assert a["unknown_sitecodes"] == {"1300": 1}, a["unknown_sitecodes"]
+    assert a["in_dw_not_hardware"] == ["New Code Person"], a["in_dw_not_hardware"]
+
+
+def test_known_sitecodes_are_not_surfaced_as_unknown():
+    ad = pd.DataFrame([{"Employee": e, "Manager": "M", "Manager Email": "m@x.com"}
+                       for e in ["A B", "C D"]])
+    roster = [{"name": "A B", "sitecode": "274"}, {"name": "C D", "sitecode": "1205"}]
+    a = wr.collect_source_audit(roster, {"A B"}, ad)
+    assert a["unknown_sitecodes"] == {}, a["unknown_sitecodes"]
+
+
 if __name__ == "__main__":
     test_matrix_buckets()
     test_clean_when_all_consistent()
     test_middle_name_does_not_false_flag()
     test_bluetooth_only_not_flagged_as_missing_hardware()
     test_name_only_input_treats_all_as_physical()
+    test_unrecognized_sitecode_is_surfaced_and_treated_as_physical()
+    test_known_sitecodes_are_not_surfaced_as_unknown()
     print("All source-audit regression tests passed ✅")

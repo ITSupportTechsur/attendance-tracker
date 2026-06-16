@@ -97,11 +97,17 @@ CUSTOM_SCHEDULES: dict[str, int] = {
 
 _BADGE_JUNK_WORDS = {"lost", "spare", "inventory", "handy"}
 
-# DataWatch site codes that are Bluetooth / HID Mobile Access (phone credential, no
-# physical card). A cardholder whose ONLY credentials use these site codes has nothing
-# to inventory in the Hardware Asset list, so they are NOT flagged "in DataWatch but not
-# in Hardware". Physical cards use 264/274/278 (the Hardware-list "274-36979" format).
-MOBILE_SITECODES = {"1205", "1212"}
+# DataWatch site codes by credential type. A cardholder whose ONLY credentials are
+# mobile (Bluetooth / HID Mobile Access — a phone, no physical card) has nothing to
+# inventory in the Hardware list, so they are NOT flagged "in DataWatch but not in
+# Hardware". Physical cards use the 2xx codes (the Hardware-list "274-36979" format).
+#
+# These are an ALLOWLIST, applied conservatively: a site code that is in neither set is
+# treated as PHYSICAL (so a real card gap is never silently skipped) AND surfaced in the
+# audit email as "unrecognized — please classify", so a newly-introduced code can never
+# be silently mis-handled. Add a confirmed new code to the right set when it appears.
+MOBILE_SITECODES          = {"1205", "1212"}
+KNOWN_PHYSICAL_SITECODES  = {"264", "272", "273", "274", "278"}
 _ISO_DATE_RE      = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
 # Date format used by D3000 (e.g. 3/17/2026)
@@ -1704,11 +1710,18 @@ def collect_source_audit(datawatch, hardware_names, manager_df) -> dict:
         a_by = {}
     a_keys = list(a_by)
 
-    # Keys that hold at least one PHYSICAL card (site code not Bluetooth/mobile). Only
-    # these are expected in the Hardware list; mobile-only cardholders are not.
+    # Keys that hold at least one PHYSICAL card. Conservative: a site code is treated as
+    # physical unless it's a KNOWN mobile code — so an unrecognized code never silently
+    # hides a real card gap. Any site code in neither known set is also reported under
+    # ``unknown_sitecodes`` so a new credential type gets classified, not guessed.
+    unknown_sitecodes: dict = {}
     if roster_mode:
         physical_keys = {_name_key(d["name"]) for d in dw_items
                          if str(d.get("sitecode", "")).strip() not in MOBILE_SITECODES}
+        for d in dw_items:
+            sc = str(d.get("sitecode", "")).strip()
+            if sc and sc not in MOBILE_SITECODES and sc not in KNOWN_PHYSICAL_SITECODES:
+                unknown_sitecodes[sc] = unknown_sitecodes.get(sc, 0) + 1
     else:
         physical_keys = set(d_by)                # no site-code info -> assume physical
 
@@ -1729,6 +1742,7 @@ def collect_source_audit(datawatch, hardware_names, manager_df) -> dict:
         "not_in_ad":          sorted(not_in_ad, key=lambda x: x["name"]),
         "in_dw_not_hardware": sorted(set(in_dw_not_hw)),
         "in_hardware_not_dw": sorted(set(in_hw_not_dw)),
+        "unknown_sitecodes":  dict(sorted(unknown_sitecodes.items())),
     }
 
 
@@ -2008,10 +2022,11 @@ def send_source_audit_email(issues: dict, n_dw: int, n_hw: int) -> None:
             log.warning("No ALERT_EMAIL/REPORT_FROM_EMAIL — skipping source-audit email.")
             return
 
-        not_ad = issues.get("not_in_ad", [])
-        dw_nh  = issues.get("in_dw_not_hardware", [])
-        hw_nd  = issues.get("in_hardware_not_dw", [])
-        total  = len(not_ad) + len(dw_nh) + len(hw_nd)
+        not_ad  = issues.get("not_in_ad", [])
+        dw_nh   = issues.get("in_dw_not_hardware", [])
+        hw_nd   = issues.get("in_hardware_not_dw", [])
+        unknown = issues.get("unknown_sitecodes", {})
+        total   = len(not_ad) + len(dw_nh) + len(hw_nd) + len(unknown)
 
         intro = (
             f"<p>Cross-system name check — <b>DataWatch roster</b> ({n_dw} cardholders) "
@@ -2037,15 +2052,23 @@ def send_source_audit_email(issues: dict, n_dw: int, n_hw: int) -> None:
             not_ad_rows = "".join(where(it) for it in not_ad)
             dw_rows = "".join(f"<li><code>{escape(n)}</code></li>" for n in dw_nh)
             hw_rows = "".join(f"<li><code>{escape(n)}</code></li>" for n in hw_nd)
+            unk_rows = "".join(
+                f"<li>site code <code>{escape(sc)}</code> — {cnt} credential(s)</li>"
+                for sc, cnt in unknown.items())
 
-            subject = f"⚠️ Source audit: {total} name(s) don't reconcile across systems"
+            subject = f"⚠️ Source audit: {total} item(s) need attention"
             body = (
                 intro
                 + sec("❓ In DataWatch / Hardware but NOT in Azure AD", not_ad_rows)
                 + sec("🪪 In DataWatch but NOT recorded in the Hardware list", dw_rows)
                 + sec("📋 In the Hardware list but NO matching DataWatch cardholder", hw_rows)
+                + sec("🆕 Unrecognized site code(s) — classify as physical card or "
+                      "Bluetooth/mobile (treated as physical for now, so any real card "
+                      "gap is still caught)", unk_rows)
                 + "<p style='color:#555'>Fix at the source: correct the spelling, add the "
-                  "person to Azure AD / the Hardware list, or remove the stale badge.</p>"
+                  "person to Azure AD / the Hardware list, remove the stale badge, or (for "
+                  "a new site code) tell me whether it's physical or mobile so I can "
+                  "classify it.</p>"
             )
 
         token = get_graph_token()
@@ -2064,7 +2087,8 @@ def send_source_audit_email(issues: dict, n_dw: int, n_hw: int) -> None:
         )
         if resp.status_code == 202:
             log.info(f"Source-audit emailed to {to_addr}: {total} item(s) "
-                     f"(not_in_ad={len(not_ad)} dw_not_hw={len(dw_nh)} hw_not_dw={len(hw_nd)})")
+                     f"(not_in_ad={len(not_ad)} dw_not_hw={len(dw_nh)} hw_not_dw={len(hw_nd)} "
+                     f"unknown_sitecodes={dict(unknown)})")
         else:
             log.warning(f"Source-audit email returned {resp.status_code}: {resp.text[:200]}")
     except Exception as exc:
