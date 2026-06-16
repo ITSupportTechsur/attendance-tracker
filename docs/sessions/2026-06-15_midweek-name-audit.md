@@ -121,3 +121,9 @@ doesn't reconcile across all three systems. Built:
 4. **Source corrections in DataWatch** (durable fix): rename the misspelled cardholders
    and consolidate duplicate cards (e.g. the two `James Rader` cards 36977 + 34160).
 5. In **November**, bump all 3 Logic Apps' recurrence +1h for the EST shift.
+- **Aaniya excluded + Amit combined (2026-06-16, owner request):** `"aaniya yadav"` →
+  `DEFAULT_EXCLUDE_NAMES` (both files). `_strip_credential_suffix()` strips a trailing
+  bare/parenthesised digit so `Amit Yadav (2)` → `Amit Yadav` (his 2nd card = the blank
+  Hardware row 264-58234); alpha tags `(1DTS)/(FE)` preserved. Applied in report
+  normalization + source-audit roster clean(); mirrored in attendance_app.py. **Source
+  audit now fully clean: not_in_ad=0, dw_not_hw=0, hw_not_dw=0 (run 27623201274).**
