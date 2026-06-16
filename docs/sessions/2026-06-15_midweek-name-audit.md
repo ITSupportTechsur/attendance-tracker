@@ -98,6 +98,11 @@ doesn't reconcile across all three systems. Built:
   `in_dw_not_hardware` only flags physical-card holders. Live (run 27619521614):
   62 mobile / 59 physical → buckets `not_in_ad=2, dw_not_hw=0, hw_not_dw=0` (the 14
   prior "gaps" were all Bluetooth-only). Tuning dispatches go to ysfrangieh120@gmail.com.
+- **Mistake-proofing (2026-06-16):** site-code rule is conservative + self-surfacing.
+  `KNOWN_PHYSICAL_SITECODES={264,272,273,274,278}` + `MOBILE_SITECODES={1205,1212}`; an
+  unknown code is treated as physical (never silently skip a real gap) AND surfaced in
+  the email as "🆕 Unrecognized site code — classify". Verified: all 7 codes known →
+  `unknown_sitecodes={}`. test_source_audit.py now 7 tests.
 
 ## What's NEXT (prioritized)
 0. ~~**Azure Logic App `attendance-nameaudit-scheduler`** for guaranteed Thursday
