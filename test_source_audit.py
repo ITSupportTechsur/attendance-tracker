@@ -63,8 +63,34 @@ def test_middle_name_does_not_false_flag():
     assert a["not_in_ad"] == [], a["not_in_ad"]
 
 
+def test_bluetooth_only_not_flagged_as_missing_hardware():
+    """A mobile/Bluetooth-only cardholder (site code 1205/1212) has no card to
+    inventory, so they must NOT appear in in_dw_not_hardware. Someone with a physical
+    card (274) still does, and someone with BOTH (mobile + physical) still does."""
+    ad = pd.DataFrame([{"Employee": e, "Manager": "M", "Manager Email": "m@x.com"}
+                       for e in ["Phys Person", "Mobile Person", "Both Cred"]])
+    roster = [
+        {"name": "Phys Person",   "sitecode": "274"},    # physical, not in HW -> flag
+        {"name": "Mobile Person", "sitecode": "1205"},   # mobile only -> NOT flagged
+        {"name": "Both Cred",     "sitecode": "1205"},   # mobile + ...
+        {"name": "Both Cred",     "sitecode": "278"},    # ...physical -> flag
+    ]
+    a = wr.collect_source_audit(roster, set(), ad)        # empty Hardware list
+    assert a["in_dw_not_hardware"] == ["Both Cred", "Phys Person"], a["in_dw_not_hardware"]
+    assert "Mobile Person" not in a["in_dw_not_hardware"]
+
+
+def test_name_only_input_treats_all_as_physical():
+    """Back-compat: passing a plain set of names (no site codes) flags all as physical."""
+    ad = pd.DataFrame([{"Employee": "Ahmed Zaied", "Manager": "M", "Manager Email": "m@x.com"}])
+    a = wr.collect_source_audit({"Ahmed Zaied"}, set(), ad)
+    assert a["in_dw_not_hardware"] == ["Ahmed Zaied"], a["in_dw_not_hardware"]
+
+
 if __name__ == "__main__":
     test_matrix_buckets()
     test_clean_when_all_consistent()
     test_middle_name_does_not_false_flag()
+    test_bluetooth_only_not_flagged_as_missing_hardware()
+    test_name_only_input_treats_all_as_physical()
     print("All source-audit regression tests passed ✅")

@@ -96,6 +96,12 @@ CUSTOM_SCHEDULES: dict[str, int] = {
 }
 
 _BADGE_JUNK_WORDS = {"lost", "spare", "inventory", "handy"}
+
+# DataWatch site codes that are Bluetooth / HID Mobile Access (phone credential, no
+# physical card). A cardholder whose ONLY credentials use these site codes has nothing
+# to inventory in the Hardware Asset list, so they are NOT flagged "in DataWatch but not
+# in Hardware". Physical cards use 264/274/278 (the Hardware-list "274-36979" format).
+MOBILE_SITECODES = {"1205", "1212"}
 _ISO_DATE_RE      = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
 # Date format used by D3000 (e.g. 3/17/2026)
@@ -372,7 +378,12 @@ def fetch_datawatch_cardholders() -> list:
             "card":     cells[i_card] if i_card is not None and i_card < len(cells) else "",
             "sitecode": cells[i_sc]   if i_sc   is not None and i_sc   < len(cells) else "",
         })
+    sc_dist = {}
+    for c in out:
+        sc_dist[c["sitecode"]] = sc_dist.get(c["sitecode"], 0) + 1
     log.info(f"Fetched {len(out)} DataWatch cardholders from D3000 roster")
+    log.info(f"Roster site-code distribution: {dict(sorted(sc_dist.items()))}  "
+             f"(mobile/Bluetooth = {sorted(MOBILE_SITECODES)})")
     return out
 
 
@@ -1651,20 +1662,28 @@ def collect_name_audit(unique_days, manager_df, merged_spellings: dict,
     }
 
 
-def collect_source_audit(datawatch_names, hardware_names, manager_df) -> dict:
+def collect_source_audit(datawatch, hardware_names, manager_df) -> dict:
     """3-source reconciliation: DataWatch roster (D) <-> Hardware list (H) <-> Azure AD (A).
     Flags every name present in D and/or H that doesn't line up across the systems —
     the matrix Amit asked for:
       • not_in_ad          — in D and/or H but NO Azure AD match (offboarded / typo /
                              person missing from AD). Each item notes which inventories
                              it's in + the closest AD name as a hint.
-      • in_dw_not_hardware — a real DataWatch badge that is NOT recorded in the Hardware
-                             list (asset inventory gap).
+      • in_dw_not_hardware — a real *physical* DataWatch card that is NOT recorded in the
+                             Hardware list (asset inventory gap). Bluetooth / HID Mobile
+                             credentials (MOBILE_SITECODES) have no card to inventory, so
+                             a mobile-ONLY cardholder is never flagged here.
       • in_hardware_not_dw — the Hardware list says they hold a card, but DataWatch has
                              no such cardholder (stale/incorrect asset record).
-    Junk/spare/guest/placeholder names are skipped. A name consistent across all three
-    produces nothing. Matching is by normalised _name_key (middle names/suffixes folded);
-    a cross-system spelling difference therefore surfaces as a mismatch by design."""
+    ``datawatch`` may be the roster (list of {name, sitecode, ...}) — required to tell
+    physical from Bluetooth — or a plain iterable of names (then all are treated as
+    physical). Junk/spare/guest/placeholder names are skipped. A name consistent across
+    all three produces nothing. Matching is by normalised _name_key (middle names/
+    suffixes folded); a cross-system spelling difference surfaces as a mismatch by design."""
+    dw_items    = list(datawatch or [])
+    roster_mode = bool(dw_items) and isinstance(dw_items[0], dict)
+    dw_names    = [d["name"] for d in dw_items] if roster_mode else dw_items
+
     def clean(names):
         m = {}
         for n in names or []:
@@ -1676,7 +1695,7 @@ def collect_source_audit(datawatch_names, hardware_names, manager_df) -> dict:
             m.setdefault(_name_key(s), s)        # key -> representative spelling
         return m
 
-    d_by, h_by = clean(datawatch_names), clean(hardware_names)
+    d_by, h_by = clean(dw_names), clean(hardware_names)
     if manager_df is not None and not manager_df.empty:
         a_by = {}
         for e in manager_df["Employee"]:
@@ -1684,6 +1703,14 @@ def collect_source_audit(datawatch_names, hardware_names, manager_df) -> dict:
     else:
         a_by = {}
     a_keys = list(a_by)
+
+    # Keys that hold at least one PHYSICAL card (site code not Bluetooth/mobile). Only
+    # these are expected in the Hardware list; mobile-only cardholders are not.
+    if roster_mode:
+        physical_keys = {_name_key(d["name"]) for d in dw_items
+                         if str(d.get("sitecode", "")).strip() not in MOBILE_SITECODES}
+    else:
+        physical_keys = set(d_by)                # no site-code info -> assume physical
 
     not_in_ad, in_dw_not_hw, in_hw_not_dw = [], [], []
     for key in sorted(set(d_by) | set(h_by)):
@@ -1694,7 +1721,8 @@ def collect_source_audit(datawatch_names, hardware_names, manager_df) -> dict:
             not_in_ad.append({"name": name, "in_dw": inD, "in_hw": inH,
                               "ad_suggestion": a_by[close[0]] if close else None})
         elif inD and not inH:
-            in_dw_not_hw.append(name)
+            if key in physical_keys:             # mobile-only -> nothing to inventory
+                in_dw_not_hw.append(name)
         elif inH and not inD:
             in_hw_not_dw.append(name)
     return {
@@ -1714,9 +1742,8 @@ def main():
         site_id         = get_sharepoint_site_id(token)
         hardware_names  = fetch_datawatch_names(token, site_id) if site_id else set()
         roster          = fetch_datawatch_cardholders()
-        datawatch_names = {c["name"] for c in roster}
-        issues = collect_source_audit(datawatch_names, hardware_names, manager_df)
-        send_source_audit_email(issues, len(datawatch_names), len(hardware_names))
+        issues = collect_source_audit(roster, hardware_names, manager_df)
+        send_source_audit_email(issues, len({c["name"] for c in roster}), len(hardware_names))
         log.info("=== Source audit complete (no report sent) ===")
         return
 
