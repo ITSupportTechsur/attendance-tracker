@@ -79,6 +79,18 @@ def _is_junk_badge_name(name):
     return any(t in _BADGE_JUNK_WORDS for t in name.lower().split())
 
 
+def _strip_credential_suffix(name):
+    """Collapse a 2nd-credential marker onto one name: 'Craig Park 2' → 'Craig Park',
+    'Amit Yadav (2)' → 'Amit Yadav'. Only a bare or parenthesised digit is stripped;
+    alpha tags like 'Amit Yadav (1DTS)' are left intact."""
+    toks = str(name).split()
+    if toks:
+        last = toks[-1]
+        if last.isdigit() or (last.startswith("(") and last.endswith(")") and last[1:-1].isdigit()):
+            return " ".join(toks[:-1])
+    return name
+
+
 def _last_first_initial_match(k, candidates):
     """
     Secondary name match: same last name + same first initial.
@@ -432,10 +444,8 @@ df["_name"] = df["_name"].apply(
     )
 )
 
-# Merge multiple fobs: "Craig Park 2" → "Craig Park" (strip trailing digit)
-df["_name"] = df["_name"].apply(
-    lambda n: " ".join(n.split()[:-1]) if n.split() and n.split()[-1].isdigit() else n
-)
+# Merge multiple fobs: "Craig Park 2" / "Amit Yadav (2)" → one name
+df["_name"] = df["_name"].apply(_strip_credential_suffix)
 df = df[df["_name"] != ""]
 
 # ─── Address Filter ───────────────────────────────────────────────────────────

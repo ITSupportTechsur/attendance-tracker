@@ -167,6 +167,19 @@ def _dedupe_name(name: str) -> str:
     return " ".join(deduped)
 
 
+def _strip_credential_suffix(name: str) -> str:
+    """Drop a trailing extra-credential marker so a 2nd badge for the same person
+    collapses onto one name: 'Craig Park 2' → 'Craig Park', 'Amit Yadav (2)' →
+    'Amit Yadav'. Only a bare digit or a parenthesised digit is stripped — alpha tags
+    like 'Amit Yadav (1DTS)' (a different tenant account) are left intact."""
+    toks = str(name).split()
+    if toks:
+        last = toks[-1]
+        if last.isdigit() or (last.startswith("(") and last.endswith(")") and last[1:-1].isdigit()):
+            return " ".join(toks[:-1])
+    return name
+
+
 def _is_junk_badge_name(name: str) -> bool:
     return any(t in _BADGE_JUNK_WORDS for t in name.lower().split())
 
@@ -745,10 +758,8 @@ def process_attendance(
     # Remove consecutive duplicate name tokens: "Ranga X X" → "Ranga X"
     df["_name"] = df["_name"].apply(_dedupe_name)
 
-    # Merge multiple fobs: "Craig Park 2" → "Craig Park" (strip trailing digit)
-    df["_name"] = df["_name"].apply(
-        lambda n: " ".join(n.split()[:-1]) if n.split() and n.split()[-1].isdigit() else n
-    )
+    # Merge multiple fobs: "Craig Park 2" / "Amit Yadav (2)" → one name
+    df["_name"] = df["_name"].apply(_strip_credential_suffix)
     df = df[df["_name"] != ""]
 
     # Address filter — keep rows that match the office address OR have no address
@@ -1694,7 +1705,7 @@ def collect_source_audit(datawatch, hardware_names, manager_df) -> dict:
     def clean(names):
         m = {}
         for n in names or []:
-            s  = str(n).strip()
+            s  = _strip_credential_suffix(str(n).strip())   # 'Amit Yadav (2)' -> 'Amit Yadav'
             sl = s.lower()
             if (not s or _is_junk_badge_name(s) or sl.startswith("guest")
                     or sl in DEFAULT_EXCLUDE_NAMES or "will be deleted" in sl):
@@ -1717,7 +1728,7 @@ def collect_source_audit(datawatch, hardware_names, manager_df) -> dict:
     # ``unknown_sitecodes`` so a new credential type gets classified, not guessed.
     unknown_sitecodes: dict = {}
     if roster_mode:
-        physical_keys = {_name_key(d["name"]) for d in dw_items
+        physical_keys = {_name_key(_strip_credential_suffix(d["name"])) for d in dw_items
                          if str(d.get("sitecode", "")).strip() not in MOBILE_SITECODES}
         for d in dw_items:
             sc = str(d.get("sitecode", "")).strip()
@@ -1757,9 +1768,6 @@ def main():
         site_id         = get_sharepoint_site_id(token)
         hardware_names  = fetch_datawatch_names(token, site_id) if site_id else set()
         roster          = fetch_datawatch_cardholders()
-        for c in roster:                               # TEMP diagnostic: owner spellings
-            if "yadav" in c["name"].lower() or "amit" in c["name"].lower():
-                log.info(f"OWNER_DIAG: name={c['name']!r} sitecode={c['sitecode']!r} card={c['card']!r}")
         issues = collect_source_audit(roster, hardware_names, manager_df)
         send_source_audit_email(issues, len({c["name"] for c in roster}), len(hardware_names))
         log.info("=== Source audit complete (no report sent) ===")

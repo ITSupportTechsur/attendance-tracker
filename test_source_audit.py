@@ -107,6 +107,22 @@ def test_known_sitecodes_are_not_surfaced_as_unknown():
     assert a["unknown_sitecodes"] == {}, a["unknown_sitecodes"]
 
 
+def test_credential_suffix_strip_and_amit_combine():
+    """'Amit Yadav (2)' (his 2nd card) must collapse onto 'Amit Yadav' so it reconciles;
+    bare/parenthesised digits are stripped, alpha tenant tags like '(1DTS)' are kept."""
+    assert wr._strip_credential_suffix("Amit Yadav (2)") == "Amit Yadav"
+    assert wr._strip_credential_suffix("Craig Park 2") == "Craig Park"
+    assert wr._strip_credential_suffix("Amit Yadav (1DTS)") == "Amit Yadav (1DTS)"
+    assert wr._strip_credential_suffix("Amit Yadav") == "Amit Yadav"
+    ad = pd.DataFrame([{"Employee": "Amit Yadav", "Manager": "No Manager", "Manager Email": ""}])
+    roster = [{"name": "Amit Yadav", "sitecode": "264"},
+              {"name": "Amit Yadav (2)", "sitecode": "264"}]
+    a = wr.collect_source_audit(roster, {"Amit Yadav"}, ad)
+    flat = ([x["name"] for x in a["not_in_ad"]]
+            + a["in_dw_not_hardware"] + a["in_hardware_not_dw"])
+    assert flat == [], f"Amit should fully reconcile after suffix strip, got {flat}"
+
+
 if __name__ == "__main__":
     test_matrix_buckets()
     test_clean_when_all_consistent()
@@ -115,4 +131,5 @@ if __name__ == "__main__":
     test_name_only_input_treats_all_as_physical()
     test_unrecognized_sitecode_is_surfaced_and_treated_as_physical()
     test_known_sitecodes_are_not_surfaced_as_unknown()
+    test_credential_suffix_strip_and_amit_combine()
     print("All source-audit regression tests passed ✅")

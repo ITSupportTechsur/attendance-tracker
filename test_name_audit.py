@@ -93,15 +93,15 @@ def test_split_spellings_go_to_splits_not_typos():
 
 
 def test_unmapped_and_junk_and_clean():
-    """Aaniya (not in AD, doesn't fold onto owner) -> unmapped; spare fob with a swipe
-    -> junk_active (via the 5th return, already dropped from the report); owner and an
-    exact match produce nothing."""
-    rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
+    """A non-excluded name not in AD -> unmapped; spare fob with a swipe -> junk_active
+    (via the 5th return, already dropped from the report); owner and an exact match
+    produce nothing."""
+    rows = [_row("Zara", "Quinn", date(2026, 6, 8)),     # not in AD, not excluded
             _row("Spare", "Mitchel Office", date(2026, 6, 9)),
             _row("Joe",   "Ghaleb", date(2026, 6, 10)),
             _row("Amit",  "Yadav",  date(2026, 6, 11))]
     audit, unique_days = _audit_from(rows)
-    assert "Aaniya Yadav" in audit["unmapped"], audit["unmapped"]
+    assert "Zara Quinn" in audit["unmapped"], audit["unmapped"]
     assert "Spare Mitchel Office" in audit["junk_active"], audit["junk_active"]
     assert "Spare Mitchel Office" not in set(unique_days["_name"]), "junk must not be a report row"
     flat = {n for n, _ in audit["typos"]} | set(audit["unmapped"]) | set(audit["junk_active"])

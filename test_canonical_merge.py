@@ -91,18 +91,19 @@ def test_single_spelling_is_never_renamed_to_full_ad_name():
 
 
 def test_owner_is_never_collapsed_into():
-    """A near-namesake must not snap onto an owner exception (Aaniya != Amit)."""
+    """A near-namesake (same last name + first initial) must not snap onto an owner
+    exception. (Uses 'Anita Yadav' — the real 'Aaniya Yadav' is now globally excluded.)"""
     mgrs = pd.DataFrame([
-        {"Employee": "Amit Yadav",   "Manager": "No Manager",      "Manager Email": ""},
-        {"Employee": "Aaniya Yadav", "Manager": "Tanisha Brown",   "Manager Email": "tanisha@techsur.solutions"},
+        {"Employee": "Amit Yadav",  "Manager": "No Manager",    "Manager Email": ""},
+        {"Employee": "Anita Yadav", "Manager": "Tanisha Brown", "Manager Email": "tanisha@techsur.solutions"},
     ])
-    rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
-            _row("Amit",   "Yadav", date(2026, 6, 9))]
+    rows = [_row("Anita", "Yadav", date(2026, 6, 8)),
+            _row("Amit",  "Yadav", date(2026, 6, 9))]
     unique_days, _zero, _total, _merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, mgrs, set())
     names = set(unique_days["_name"])
-    assert "Aaniya Yadav" in names and "Amit Yadav" in names, \
-        f"Aaniya and Amit must stay separate, got {names}"
+    assert "Anita Yadav" in names and "Amit Yadav" in names, \
+        f"Anita and Amit must stay separate, got {names}"
 
 
 def test_nickname_folds_into_one_row_when_ad_twin_present():
@@ -138,16 +139,31 @@ def test_lone_nickname_without_twin_is_not_folded():
 
 def test_nickname_does_not_fold_onto_owner():
     """A near-namesake NOT in AD must not snap onto the owner via the second pass:
-    'Aaniya Yadav' (absent from AD) + owner 'Amit Yadav' present -> stay separate."""
+    'Anita Yadav' (absent from AD) + owner 'Amit Yadav' present -> stay separate.
+    (The real 'Aaniya Yadav' is now globally excluded, so a stand-in is used here.)"""
     mgrs = pd.DataFrame([
         {"Employee": "Amit Yadav", "Manager": "No Manager", "Manager Email": ""},
     ])
-    rows = [_row("Aaniya", "Yadav", date(2026, 6, 8)),
-            _row("Amit",   "Yadav", date(2026, 6, 9))]
+    rows = [_row("Anita", "Yadav", date(2026, 6, 8)),
+            _row("Amit",  "Yadav", date(2026, 6, 9))]
     unique_days, _zero, _total, merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, mgrs, set())
-    assert merged == {}, f"Aaniya must not fold onto the owner, got {merged}"
-    assert {"Aaniya Yadav", "Amit Yadav"} <= set(unique_days["_name"]), set(unique_days["_name"])
+    assert merged == {}, f"Anita must not fold onto the owner, got {merged}"
+    assert {"Anita Yadav", "Amit Yadav"} <= set(unique_days["_name"]), set(unique_days["_name"])
+
+
+def test_credential_suffix_combines_report_rows():
+    """A 2nd card labelled 'Amit Yadav (2)' must combine with 'Amit Yadav' into one
+    report row with summed days (the owner's two cards under one main name)."""
+    mgrs = pd.DataFrame([{"Employee": "Amit Yadav", "Manager": "No Manager", "Manager Email": ""}])
+    rows = [_row("Amit", "Yadav", date(2026, 6, 8)),
+            _row("Amit", "Yadav (2)", date(2026, 6, 9))]
+    unique_days, _z, _t, _m, _j = wr.process_attendance(
+        _badge_excel(rows), START, END, mgrs, set())
+    amit = unique_days[unique_days["_name"].str.contains("Amit")]
+    assert len(amit) == 1, f"expected one Amit row, got {amit['_name'].tolist()}"
+    assert amit["_name"].iloc[0] == "Amit Yadav", amit["_name"].iloc[0]
+    assert int(amit["Days Present"].iloc[0]) == 2
 
 
 def test_junk_fob_with_activity_is_dropped_and_surfaced():
@@ -167,5 +183,6 @@ if __name__ == "__main__":
     test_nickname_folds_into_one_row_when_ad_twin_present()
     test_lone_nickname_without_twin_is_not_folded()
     test_nickname_does_not_fold_onto_owner()
+    test_credential_suffix_combines_report_rows()
     test_junk_fob_with_activity_is_dropped_and_surfaced()
     print("All canonical-merge regression tests passed ✅")
