@@ -5,6 +5,9 @@ import difflib
 from datetime import timedelta, date
 import plotly.graph_objects as go
 
+# Shared U.S. federal-holiday calendar (single source of truth with weekly_report.py)
+from holiday_calendar import expected_business_days, is_observed_holiday
+
 # Optional Azure AD imports
 try:
     import msal
@@ -510,11 +513,16 @@ def count_weekdays(start, end):
         cur += timedelta(days=1)
     return total
 
-total_weekdays = count_weekdays(start_date, end_date)
+# Expected business days = Mon–Fri in range minus observed federal holidays, so a
+# week with a holiday is scored out of 4 (not 5) — mirrors weekly_report.py.
+total_weekdays = expected_business_days(start_date, end_date)
 
 mask = (df["_date"] >= start_date) & (df["_date"] <= end_date)
 df_filtered = df[mask]
 df_weekdays = df_filtered[pd.to_datetime(df_filtered["_date"]).dt.dayofweek < 5]
+# Drop swipes on observed federal holidays — office closed, so they count toward
+# neither Days Present nor the denominator (keeps Attendance % ≤ 100, Days Absent ≥ 0).
+df_weekdays = df_weekdays[~df_weekdays["_date"].apply(is_observed_holiday)]
 
 # ─── Exclude Names ────────────────────────────────────────────────────────────
 with st.expander("🚫 Exclude names from report", expanded=False):
@@ -562,9 +570,10 @@ unique_days = (
     .rename(columns={"_date": "Days Present"})
 )
 
+_denom = total_weekdays if total_weekdays > 0 else 1   # guard div-by-zero
 unique_days["Total Weekdays"] = total_weekdays
-unique_days["Attendance %"] = (unique_days["Days Present"] / total_weekdays * 100).round(1)
-unique_days["Days Absent"]  = total_weekdays - unique_days["Days Present"]
+unique_days["Attendance %"] = (unique_days["Days Present"] / _denom * 100).round(1).clip(upper=100)
+unique_days["Days Absent"]  = (total_weekdays - unique_days["Days Present"]).clip(lower=0)
 
 # Override for employees with non-standard office schedules
 for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():

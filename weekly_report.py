@@ -35,6 +35,9 @@ import msal
 import requests as http_requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+# Shared U.S. federal-holiday calendar (single source of truth with attendance_app.py)
+from holiday_calendar import expected_business_days, is_observed_holiday
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -775,6 +778,10 @@ def process_attendance(
     # Date range + weekdays only
     df = df[(df["_date"] >= start) & (df["_date"] <= end)]
     df = df[pd.to_datetime(df["_date"]).dt.dayofweek < 5]
+    # Drop swipes on observed federal holidays — the office was closed, so they
+    # count toward neither the numerator (Days Present) nor the denominator. This
+    # keeps Attendance % at or below 100 and Days Absent ≥ 0 in a holiday week.
+    df = df[~df["_date"].apply(is_observed_holiday)]
 
     # Exclude default non-employee names, "guest*", and junk/spare fobs. A spare
     # (spare/lost/inventory/handy) that actually swiped must NOT appear as a person in
@@ -788,7 +795,10 @@ def process_attendance(
               | _name_lower.str.startswith("guest")
               | _name_junk)]
 
-    total_weekdays = count_weekdays(start, end)
+    # Expected business days = Mon–Fri in range minus observed federal holidays,
+    # so a week with a holiday is scored out of 4 (not 5) and nobody is marked
+    # absent for a day the office was closed.
+    total_weekdays = expected_business_days(start, end)
 
     # Merge split spellings of the SAME person BEFORE counting days, so e.g.
     # 'Honey Warma' + 'Honey Varma' sum into one row instead of splitting the week
@@ -809,11 +819,14 @@ def process_attendance(
           .reset_index()
           .rename(columns={"_date": "Days Present"})
     )
+    _denom = total_weekdays if total_weekdays > 0 else 1   # guard div-by-zero
     unique_days["Total Weekdays"] = total_weekdays
     unique_days["Attendance %"]   = (
-        unique_days["Days Present"] / total_weekdays * 100
-    ).round(1)
-    unique_days["Days Absent"] = total_weekdays - unique_days["Days Present"]
+        unique_days["Days Present"] / _denom * 100
+    ).round(1).clip(upper=100)
+    unique_days["Days Absent"] = (
+        total_weekdays - unique_days["Days Present"]
+    ).clip(lower=0)
 
     # Override for employees with non-standard office schedules
     for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
