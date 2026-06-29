@@ -31,16 +31,29 @@ def _logo_base64():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _pct_badge(val):
+def _pct_badge(val, status=""):
     try:
         v = float(val)
-        if v == 0:    cls, label = "badge-red",    f"{v:.0f}%"
-        elif v < 60:  cls, label = "badge-orange",  f"{v:.0f}%"
-        elif v < 100: cls, label = "badge-yellow",  f"{v:.0f}%"
-        else:         cls, label = "badge-green",   f"{v:.0f}%"
+        label = f"{v:.0f}%"
+        if status == "Met":
+            cls = "badge-green"
+        elif status == "Not Met":
+            cls = "badge-red" if v == 0 else "badge-orange"
+        else:
+            cls = ("badge-red" if v == 0 else "badge-orange" if v < 60
+                   else "badge-yellow" if v < 100 else "badge-green")
         return f'<span class="badge {cls}">{label}</span>'
     except (TypeError, ValueError):
         return escape(str(val))
+
+
+def _status_badge(status):
+    s = str(status)
+    if s == "Met":
+        return '<span class="badge badge-green">&#10003; Met</span>'
+    if s == "Not Met":
+        return '<span class="badge badge-red">&#9888; Not Met</span>'
+    return escape(s)
 
 
 def _build_table(df, show_manager=True):
@@ -62,7 +75,8 @@ def _build_table(df, show_manager=True):
             f'<td class="num">{int(row["Days Present"])}</td>'
             f'<td class="num">{int(row["Days Absent"])}</td>'
             f'<td class="num light">{int(row["Total Weekdays"])}</td>'
-            f'<td class="center">{_pct_badge(pct)}</td>'
+            f'<td class="center">{_pct_badge(pct, row.get("Status", ""))}</td>'
+            f'<td class="center">{_status_badge(row.get("Status", ""))}</td>'
             f"</tr>"
         )
 
@@ -71,7 +85,7 @@ def _build_table(df, show_manager=True):
         f'<th style="width:36px">#</th>'
         f'<th style="text-align:left">Employee</th>'
         f"{mgr_th}"
-        f'<th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th>'
+        f'<th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th><th>Status</th>'
         f'</tr></thead><tbody>{rows}</tbody></table>'
     )
 
@@ -84,8 +98,15 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 60).sum())
+    at_risk    = (int((unique_days["Status"] == "Not Met").sum())
+                  if "Status" in unique_days.columns
+                  else int((unique_days["Attendance %"] < 60).sum()))
     zero_count = len(zero_df)
+    legend = (
+        "&#10003; <b>Met</b> = attended at least the required in-office days "
+        "(default 3/week; fewer for some roles). <b>Attendance %</b> is the honest share "
+        "of the week worked in-office. Holidays are excluded and need no make-up."
+    )
 
     # ── Logo ───────────────────────────────────────────────────────────────
     logo_src = _logo_base64()
@@ -118,10 +139,12 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
             team     = unique_days[unique_days["Manager"] == mgr].copy()
             avg      = team["Attendance %"].mean()
             n        = len(team)
-            risk_n   = int((team["Attendance %"] < 60).sum())
+            risk_n   = (int((team["Status"] == "Not Met").sum())
+                        if "Status" in team.columns
+                        else int((team["Attendance %"] < 60).sum()))
             tbl      = _build_table(team.sort_values("Attendance %"), show_manager=False)
             risk_pill = (
-                f'<span class="risk-pill">{risk_n} at risk</span>'
+                f'<span class="risk-pill">{risk_n} not met</span>'
                 if risk_n > 0 else ""
             )
             mgr_sections += (
@@ -190,7 +213,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
 
         f'<div class="card">'
         f'<div class="stat" style="color:{risk_color}">{at_risk}</div>'
-        f'<div class="stat-label">At Risk (&lt;60%)</div></div>'
+        f'<div class="stat-label">Not Met</div></div>'
 
         f'<div class="card">'
         f'<div class="stat" style="color:{zero_color}">{zero_count}</div>'
@@ -417,6 +440,7 @@ def generate_report_html(unique_days, zero_df, start, end, total_weekdays):
       <h2>All Employees</h2>
       <span class="pill">{total_emp} total</span>
     </div>
+    <p class="note">{legend}</p>
     {all_table}
   </div>
 
@@ -483,6 +507,13 @@ zero_df = pd.DataFrame([
     {"_name": "Nathan Zero",  "Days Present": 0, "Days Absent": 5, "Total Weekdays": 5, "Attendance %": 0.0, "Manager": "Shailendra Gohil", "Manager Email": "shailendra.gohil@techsur.solutions"},
 ])
 
+# Derive Required + Status + Days Absent for the preview, mirroring production
+# (default 3; Met when Days Present >= Required; Days Absent = max(0, Required - present)).
+for _df in (unique_days, zero_df):
+    _df["Required"] = 3
+    _df["Days Absent"] = (_df["Required"] - _df["Days Present"]).clip(lower=0)
+    _df["Status"] = _df["Days Present"].ge(_df["Required"]).map({True: "Met", False: "Not Met"})
+
 # ── Excel generator (mirrors weekly_report.py) ────────────────────────────────
 
 def _safe_sheet_name(name):
@@ -546,6 +577,7 @@ def _apply_sheet_formatting_xl(ws, df_cols, title, subtitle, tab_color="F0B429")
 
     pct_idx = next((i+1 for i, c in enumerate(col_names) if "Attendance" in str(c)), None)
     emp_idx = next((i+1 for i, c in enumerate(col_names) if str(c) == "Employee"),   None)
+    status_idx = next((i+1 for i, c in enumerate(col_names) if str(c) == "Status"),  None)
 
     even_fill = PatternFill("solid", fgColor=EVEN_BG)
     pct_fills = {
@@ -576,7 +608,7 @@ def _apply_sheet_formatting_xl(ws, df_cols, title, subtitle, tab_color="F0B429")
                 horizontal="center" if is_num else "left",
                 vertical="center", indent=0 if is_num else 1,
             )
-            if c_idx == pct_idx:
+            if c_idx == pct_idx or c_idx == status_idx:
                 pass
             elif c_idx == emp_idx:
                 cell.font = emp_font
@@ -591,29 +623,49 @@ def _apply_sheet_formatting_xl(ws, df_cols, title, subtitle, tab_color="F0B429")
                 cell.font = data_font
                 if is_even: cell.fill = even_fill
 
-        if pct_idx:
-            pct_cell = row_cells[pct_idx - 1]
+        # Colour the Attendance % and Status cells by COMPLIANCE (Met/Not Met).
+        if pct_idx or status_idx:
+            pct_cell    = row_cells[pct_idx - 1] if pct_idx else None
+            status_cell = row_cells[status_idx - 1] if status_idx else None
             try:
-                val = float(pct_cell.value)
-                key = ("zero" if val==0 else "atrisk" if val<60 else "caution" if val<100 else "good")
+                val = float(pct_cell.value) if pct_cell is not None else None
+            except (TypeError, ValueError):
+                val = None
+            status_val = (
+                str(status_cell.value).strip()
+                if status_cell is not None and status_cell.value is not None else ""
+            )
+            if status_val == "Met":
+                key = "good"
+            elif status_val == "Not Met":
+                key = "zero" if val == 0 else "atrisk"
+            elif val is not None:
+                key = "zero" if val == 0 else "atrisk" if val < 60 else "caution" if val < 100 else "good"
+            else:
+                key = None
+            if key and pct_cell is not None and val is not None:
                 pct_cell.fill          = pct_fills[key]
                 pct_cell.font          = pct_fonts[key]
                 pct_cell.number_format = '0.0"%"'
                 pct_cell.alignment     = Alignment(horizontal="center", vertical="center")
                 pct_cell.border        = _row_border
-            except (TypeError, ValueError):
-                pass
+            if key and status_cell is not None:
+                status_cell.fill      = pct_fills[key]
+                status_cell.font      = pct_fonts[key]
+                status_cell.alignment = Alignment(horizontal="center", vertical="center")
+                status_cell.border    = _row_border
 
     col_widths = {
         "#": 4, "Employee": 24, "Days Present": 13, "Days Absent": 12,
-        "Total Weekdays": 14, "Attendance %": 14, "Manager": 24, "Manager Email": 30,
+        "Total Weekdays": 14, "Attendance %": 14, "Status": 12,
+        "Manager": 24, "Manager Email": 30,
     }
     for c_idx, col_name in enumerate(col_names, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(str(col_name), 15)
 
 
 def _team_sheet_xl(df_team, writer, sheet_name, title, subtitle, tab_color="8B8680"):
-    cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+    cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
     sheet_df = (
         df_team[cols]
         .sort_values("Attendance %", ascending=True)
@@ -631,7 +683,7 @@ def generate_report_excel(unique_days, zero_df, start, end):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
 
         # All Employees sheet
-        cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+        cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
         if "Manager" in unique_days.columns:
             cols += ["Manager"]
         summary = (
@@ -688,15 +740,17 @@ def generate_report_excel(unique_days, zero_df, start, end):
 
 
 # ── Generate & open ────────────────────────────────────────────────────────────
+# Guarded so importing this module (e.g. pytest collection) does NOT write/open files.
 
-html_content = generate_report_html(unique_days, zero_df, start, end, total_weekdays)
-with open("sample_report.html", "w", encoding="utf-8") as f:
-    f.write(html_content)
-print("Saved: sample_report.html")
-subprocess.run(["open", "sample_report.html"])
+if __name__ == "__main__":
+    html_content = generate_report_html(unique_days, zero_df, start, end, total_weekdays)
+    with open("sample_report.html", "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print("Saved: sample_report.html")
+    subprocess.run(["open", "sample_report.html"])
 
-excel_bytes = generate_report_excel(unique_days, zero_df, start, end)
-with open("sample_report.xlsx", "wb") as f:
-    f.write(excel_bytes)
-print("Saved: sample_report.xlsx")
-subprocess.run(["open", "sample_report.xlsx"])
+    excel_bytes = generate_report_excel(unique_days, zero_df, start, end)
+    with open("sample_report.xlsx", "wb") as f:
+        f.write(excel_bytes)
+    print("Saved: sample_report.xlsx")
+    subprocess.run(["open", "sample_report.xlsx"])

@@ -57,12 +57,16 @@ def test_denominator_drops_to_four_in_holiday_week():
     assert int(full["Days Present"]) == 4
     assert int(full["Total Weekdays"]) == 4
     assert float(full["Attendance %"]) == 100.0
+    assert int(full["Required"]) == 3            # min(3 default, 4-day week)
     assert int(full["Days Absent"]) == 0
+    assert full["Status"] == "Met"
 
     half = unique_days[unique_days["_name"] == "Half Week"].iloc[0]
     assert int(half["Days Present"]) == 2
-    assert float(half["Attendance %"]) == 50.0
-    assert int(half["Days Absent"]) == 2
+    assert float(half["Attendance %"]) == 50.0   # honest 2/4, unchanged
+    assert int(half["Required"]) == 3
+    assert int(half["Days Absent"]) == 1         # 3 required - 2 present
+    assert half["Status"] == "Not Met"           # 2 < 3
 
 
 def test_badge_swipe_on_holiday_is_ignored_no_over_100():
@@ -81,25 +85,32 @@ def test_badge_swipe_on_holiday_is_ignored_no_over_100():
 
 
 def test_custom_schedule_employee_in_holiday_week():
-    """A 1-day/week employee (Joe Ghaleb) present 1 day is still 100 % in a 4-day
-    week; a 2-day/week employee (Aashti Alam) present 1 of 2 is 50 %."""
+    """Custom-schedule people keep the honest denominator (the week), NOT an overridden
+    one. Joe Ghaleb (req 1) present 1 reads 25 % with Status Met; Aashti Alam (req 2)
+    present 1 of 2 reads 25 % with Status Not Met."""
     rows  = [_row("Joe", "Ghaleb", WORKDAYS[0])]
-    rows += [_row("Aashti", "Alam", WORKDAYS[0])]   # 1 of expected 2
+    rows += [_row("Aashti", "Alam", WORKDAYS[0])]   # 1 of required 2
     unique_days, _zero, total, _merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, pd.DataFrame(), set())
 
     assert total == 4
     joe = unique_days[unique_days["_name"] == "Joe Ghaleb"].iloc[0]
-    assert int(joe["Total Weekdays"]) == 1, "min(1 sched, 4 week) = 1"
-    assert float(joe["Attendance %"]) == 100.0
+    assert int(joe["Total Weekdays"]) == 4, "denominator is the week, not the requirement"
+    assert int(joe["Required"]) == 1
+    assert float(joe["Attendance %"]) == 25.0, "honest 1/4, not a fake 100%"
+    assert joe["Status"] == "Met"                # 1 >= 1
+    assert int(joe["Days Absent"]) == 0
 
     aashti = unique_days[unique_days["_name"] == "Aashti Alam"].iloc[0]
-    assert int(aashti["Total Weekdays"]) == 2
-    assert float(aashti["Attendance %"]) == 50.0
+    assert int(aashti["Required"]) == 2
+    assert float(aashti["Attendance %"]) == 25.0
+    assert aashti["Status"] == "Not Met"         # 1 < 2
+    assert int(aashti["Days Absent"]) == 1
 
 
 def test_zero_attendance_uses_holiday_adjusted_denominator():
-    """A DataWatch holder with no swipes in a holiday week shows Days Absent = 4."""
+    """A DataWatch holder with no swipes in a holiday week is Not Met, absent its
+    requirement of 3 (capped by the 4-day week), not the full week."""
     rows = [_row("Present", "Person", d) for d in WORKDAYS]
     unique_days, _zero, total, _merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, pd.DataFrame(), {"Absent Andy"})
@@ -109,9 +120,11 @@ def test_zero_attendance_uses_holiday_adjusted_denominator():
     assert len(andy) == 1, f"expected Absent Andy as a zero row, got {set(unique_days['_name'])}"
     andy = andy.iloc[0]
     assert int(andy["Days Present"]) == 0
-    assert int(andy["Days Absent"]) == 4, "absent the whole 4-day week"
+    assert int(andy["Required"]) == 3            # min(3 default, 4-day week)
+    assert int(andy["Days Absent"]) == 3         # short the whole requirement
     assert int(andy["Total Weekdays"]) == 4
     assert float(andy["Attendance %"]) == 0.0
+    assert andy["Status"] == "Not Met"
 
 
 if __name__ == "__main__":

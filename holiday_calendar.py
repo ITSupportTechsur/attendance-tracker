@@ -32,6 +32,12 @@ from functools import lru_cache
 import holidays as _holidays
 
 
+# Company-wide default in-office requirement (days per week). Per-person overrides
+# live in CUSTOM_SCHEDULES in weekly_report.py / attendance_app.py. Defined here so
+# both entry points import the same number and can never drift.
+IN_OFFICE_REQUIRED_DAYS = 3
+
+
 def _to_date(value) -> date:
     """Coerce a date / datetime / pandas.Timestamp / ISO string to a plain date."""
     if isinstance(value, datetime):          # also covers pandas.Timestamp

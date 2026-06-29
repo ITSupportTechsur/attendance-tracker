@@ -6,7 +6,11 @@ from datetime import timedelta, date
 import plotly.graph_objects as go
 
 # Shared U.S. federal-holiday calendar (single source of truth with weekly_report.py)
-from holiday_calendar import expected_business_days, is_observed_holiday
+from holiday_calendar import (
+    expected_business_days,
+    is_observed_holiday,
+    IN_OFFICE_REQUIRED_DAYS,
+)
 
 # Optional Azure AD imports
 try:
@@ -47,7 +51,7 @@ OWNER_EXCEPTIONS = {
 # Employees with non-standard in-office schedules.
 # Maps _name_key → expected days per week at the Reston office.
 CUSTOM_SCHEDULES: dict[str, int] = {
-    "aashti alam":        2,   # Aashti Fatima Alam — 2 days Reston, 1 day FAA
+    "aashti alam":        2,   # 2 office days/week (approved schedule)
     "joe ghaleb":         1,   # Joe Ghaleb — 1 day/week in office
     "shawn faunce":       3,
     "david prompovitch":  3,
@@ -572,22 +576,25 @@ unique_days = (
 
 _denom = total_weekdays if total_weekdays > 0 else 1   # guard div-by-zero
 unique_days["Total Weekdays"] = total_weekdays
+# Attendance % is the honest share of the week — SAME formula for everyone, no per-person
+# denominator override. Compliance is judged separately via Required/Status below, so a
+# 1-day person reads e.g. 20% with a green "Met" rather than a fake 100%.
 unique_days["Attendance %"] = (unique_days["Days Present"] / _denom * 100).round(1).clip(upper=100)
-unique_days["Days Absent"]  = (total_weekdays - unique_days["Days Present"]).clip(lower=0)
 
-# Override for employees with non-standard office schedules
+# Per-person in-office requirement: company default, custom schedule wins, capped by the
+# holiday-adjusted week so a closed day never makes someone "Not Met".
+_req_default = min(IN_OFFICE_REQUIRED_DAYS, total_weekdays)
+unique_days["Required"] = _req_default
 for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
-    _cs_eff  = min(_cs_exp, total_weekdays)
     _cs_mask = unique_days["_name"].apply(_name_key) == _cs_key
     if _cs_mask.any():
-        unique_days.loc[_cs_mask, "Total Weekdays"] = _cs_eff
-        unique_days.loc[_cs_mask, "Attendance %"]   = (
-            (unique_days.loc[_cs_mask, "Days Present"] / _cs_eff * 100)
-            .round(1).clip(upper=100)
-        )
-        unique_days.loc[_cs_mask, "Days Absent"] = (
-            (_cs_eff - unique_days.loc[_cs_mask, "Days Present"]).clip(lower=0)
-        )
+        unique_days.loc[_cs_mask, "Required"] = min(_cs_exp, total_weekdays)
+
+# Days Absent and Status are relative to the requirement (Days Absent > 0 ⇔ Not Met).
+unique_days["Days Absent"] = (unique_days["Required"] - unique_days["Days Present"]).clip(lower=0)
+unique_days["Status"] = (
+    unique_days["Days Present"].ge(unique_days["Required"]).map({True: "Met", False: "Not Met"})
+)
 
 unique_days = unique_days.sort_values("Attendance %", ascending=False).reset_index(drop=True)
 unique_days.index += 1
@@ -633,20 +640,26 @@ if _datawatch_names:
             fuzzy_matched[n] = badge_name
             continue  # treat as same person — exclude from 0 attendance
         zero_rows.append(
-            {"_name": n, "Days Present": 0, "Days Absent": total_weekdays,
-             "Total Weekdays": total_weekdays, "Attendance %": 0.0}
+            {"_name": n, "Days Present": 0,
+             "Total Weekdays": total_weekdays, "Attendance %": 0.0,
+             "Required": _req_default, "Days Absent": _req_default,
+             "Status": "Not Met"}
         )
     if fuzzy_matched:
         st.session_state["fuzzy_matched"] = fuzzy_matched
     if zero_rows:
         zero_df = pd.DataFrame(zero_rows)
-        # Apply custom schedule overrides to zero-attendance rows
+        # Apply per-person requirement to zero-attendance rows (custom schedule wins).
         for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
-            _cs_eff  = min(_cs_exp, total_weekdays)
+            _cs_req  = min(_cs_exp, total_weekdays)
             _cs_mask = zero_df["_name"].apply(_name_key) == _cs_key
             if _cs_mask.any():
-                zero_df.loc[_cs_mask, "Total Weekdays"] = _cs_eff
-                zero_df.loc[_cs_mask, "Days Absent"]    = _cs_eff
+                zero_df.loc[_cs_mask, "Required"]    = _cs_req
+                zero_df.loc[_cs_mask, "Days Absent"] = _cs_req
+        # 0 present ⇒ Not Met, unless the requirement itself is 0 (e.g. holiday-only week).
+        zero_df["Status"] = (
+            zero_df["Days Present"].ge(zero_df["Required"]).map({True: "Met", False: "Not Met"})
+        )
         if has_managers:
             zero_df, _ = _merge_managers(zero_df, manager_df)
 
@@ -681,28 +694,45 @@ m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Total Employees",    len(unique_days))
 m2.metric("Weekdays in Range",  total_weekdays)
 m3.metric("Avg Attendance %",   f"{unique_days['Attendance %'].mean():.1f}%")
-m4.metric("Date Range",         f"{start_date} → {end_date}")
+m4.metric("Not Met",            int((unique_days["Status"] == "Not Met").sum()),
+          help="Attended fewer than their required in-office days")
 m5.metric("0 Attendance",       len(zero_df), help="DataWatch badge holders with no recorded swipes in this period")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
-def color_pct(val):
-    if val >= 60:
-        return "background-color: #1a6b3c; color: #a8f0c6; font-weight: bold"
-    elif val >= 40:
-        return "background-color: #7a5c00; color: #ffd966; font-weight: bold"
-    else:
-        return "background-color: #7a1a1a; color: #f4a0a0; font-weight: bold"
-
 def bar_color(pct):
     if pct >= 60: return "#2ecc71"
     elif pct >= 40: return "#f39c12"
     else: return "#e74c3c"
 
+def _status_css(is_met, pct):
+    """Cell style by COMPLIANCE (Met green / Not Met amber, red at 0%) — not by raw %,
+    so a 1-day 'Met' person reads green even at 20%."""
+    if is_met:
+        return "background-color: #1a6b3c; color: #a8f0c6; font-weight: bold"
+    elif pct == 0:
+        return "background-color: #7a1a1a; color: #f4a0a0; font-weight: bold"
+    else:
+        return "background-color: #7a5c00; color: #ffd966; font-weight: bold"
+
+def style_by_status(row):
+    """Row styler: colour the Attendance % and Status cells by Met/Not Met."""
+    css = _status_css(str(row.get("Status", "")) == "Met", row.get("Attendance %", 0))
+    styles = pd.Series("", index=row.index)
+    for _c in ("Attendance %", "Status"):
+        if _c in row.index:
+            styles[_c] = css
+    return styles
+
 def make_bar_chart(df_in, title=""):
+    marker = (
+        df_in["Status"].map(lambda s: "#2ecc71" if str(s) == "Met" else "#e74c3c")
+        if "Status" in df_in.columns
+        else df_in["Attendance %"].apply(bar_color)
+    )
     fig = go.Figure(go.Bar(
         x=df_in["Employee"],
         y=df_in["Attendance %"],
-        marker_color=df_in["Attendance %"].apply(bar_color),
+        marker_color=marker,
         text=df_in["Attendance %"].astype(str) + "%",
         textposition="outside",
         textfont=dict(color="white", size=11),
@@ -730,7 +760,7 @@ def _safe_sheet_name(name):
 def _team_sheet(df_team, writer, sheet_name):
     """Write a sorted team DataFrame to an Excel sheet."""
     sheet_df = (
-        df_team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]]
+        df_team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]]
         .sort_values("Attendance %", ascending=True)   # at-risk first
         .rename(columns={"_name": "Employee"})
         .reset_index(drop=True)
@@ -757,7 +787,7 @@ def make_manager_excel(data_df, single_manager=None, zero_df=None):
 
         else:
             # ── Sheet 1: All Employees ────────────────────────────────────────
-            cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+            cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
             if "Manager" in data_df.columns:
                 cols += ["Manager"]
             summary = (
@@ -811,7 +841,7 @@ view_mode = st.radio("View", view_options, horizontal=True)
 if view_mode == "Overall Report":
     st.subheader("Attendance per Employee")
 
-    display_cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+    display_cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
     rename_map = {"_name": "Employee"}
     if has_managers:
         display_cols += ["Manager"]
@@ -820,7 +850,7 @@ if view_mode == "Overall Report":
     styled = (
         unique_days[display_cols]
         .rename(columns=rename_map)
-        .style.applymap(color_pct, subset=["Attendance %"])
+        .style.apply(style_by_status, axis=1)
     )
     st.dataframe(styled, use_container_width=True, height=500)
 
@@ -862,9 +892,8 @@ elif view_mode == "By Manager":
         mgr_email = team["Manager Email"].iloc[0] if "Manager Email" in team.columns else ""
         team_count = len(team)
         avg_pct    = team["Attendance %"].mean()
-        green_count  = (team["Attendance %"] >= 60).sum()
-        yellow_count = ((team["Attendance %"] >= 40) & (team["Attendance %"] < 60)).sum()
-        red_count    = (team["Attendance %"] < 40).sum()
+        met_count    = int((team["Status"] == "Met").sum())
+        notmet_count = int((team["Status"] == "Not Met").sum())
 
         # ── Manager header banner ──────────────────────────────────────────────
         st.markdown(
@@ -889,22 +918,21 @@ elif view_mode == "By Manager":
         )
 
         # ── Team summary stats ─────────────────────────────────────────────────
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("Direct Reports",  team_count)
-        s2.metric("Team Avg",        f"{avg_pct:.1f}%")
-        s3.metric("On Track (≥80%)", green_count,  delta=None)
-        s4.metric("At Risk (50–79%)", yellow_count, delta=None)
-        s5.metric("Critical (<50%)", red_count,    delta=None)
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Direct Reports", team_count)
+        s2.metric("Team Avg",       f"{avg_pct:.1f}%")
+        s3.metric("Met",            met_count)
+        s4.metric("Not Met",        notmet_count)
 
         # ── Attendance table ───────────────────────────────────────────────────
         display_team = (
-            team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]]
+            team[["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]]
             .rename(columns={"_name": "Employee"})
             .reset_index(drop=True)
         )
         display_team.index += 1
 
-        styled_team = display_team.style.applymap(color_pct, subset=["Attendance %"])
+        styled_team = display_team.style.apply(style_by_status, axis=1)
         st.dataframe(styled_team, use_container_width=True, height=min(80 + team_count * 38, 450))
 
         # ── Bar chart ─────────────────────────────────────────────────────────
@@ -936,7 +964,7 @@ elif view_mode == "0 Attendance":
         f"but **no recorded badge swipes** between {start_date} and {end_date}."
     )
 
-    display_cols_z = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+    display_cols_z = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
     if "Manager" in zero_df.columns:
         display_cols_z += ["Manager"]
 
@@ -947,7 +975,7 @@ elif view_mode == "0 Attendance":
     )
     display_zero.index += 1
     st.dataframe(
-        display_zero.style.applymap(color_pct, subset=["Attendance %"]),
+        display_zero.style.apply(style_by_status, axis=1),
         use_container_width=True,
         height=min(80 + len(zero_df) * 38, 500),
     )
@@ -970,12 +998,13 @@ if selected:
     row = unique_days[unique_days["_name"] == selected].iloc[0]
     emp_days = df_weekdays[df_weekdays["_name"] == selected]["_date"].drop_duplicates().sort_values()
 
-    cols = st.columns(4 if has_managers else 3)
+    cols = st.columns(5 if has_managers else 4)
     cols[0].metric("Days Present",  int(row["Days Present"]))
     cols[1].metric("Days Absent",   int(row["Days Absent"]))
     cols[2].metric("Attendance %",  f"{row['Attendance %']}%")
+    cols[3].metric("Status",        str(row.get("Status", "—")))
     if has_managers:
-        cols[3].metric("Manager", row.get("Manager", "—"))
+        cols[4].metric("Manager", row.get("Manager", "—"))
 
     with st.expander("Show days they came in"):
         for d in emp_days:

@@ -36,7 +36,12 @@ import requests as http_requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # Shared U.S. federal-holiday calendar (single source of truth with attendance_app.py)
-from holiday_calendar import expected_business_days, is_observed_holiday
+from holiday_calendar import (
+    expected_business_days,
+    is_observed_holiday,
+    observed_holidays_in_range,
+    IN_OFFICE_REQUIRED_DAYS,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,7 +94,7 @@ OWNER_EXCEPTIONS = {
 # Maps _name_key → expected days per week at the Reston office.
 # Used so their Attendance % is calculated against their actual expectation, not 5.
 CUSTOM_SCHEDULES: dict[str, int] = {
-    "aashti alam":        2,   # Aashti Fatima Alam — 2 days Reston, 1 day FAA
+    "aashti alam":        2,   # 2 office days/week (approved schedule)
     "joe ghaleb":         1,   # Joe Ghaleb — 1 day/week in office
     "shawn faunce":       3,
     "david prompovitch":  3,
@@ -821,26 +826,30 @@ def process_attendance(
     )
     _denom = total_weekdays if total_weekdays > 0 else 1   # guard div-by-zero
     unique_days["Total Weekdays"] = total_weekdays
+    # Attendance % is the honest share of the week — SAME formula for everyone, no
+    # per-person denominator override. Compliance is judged separately via Required/Status
+    # below, so a 1-day person reads e.g. 20% with a green "Met" rather than a fake 100%.
     unique_days["Attendance %"]   = (
         unique_days["Days Present"] / _denom * 100
     ).round(1).clip(upper=100)
-    unique_days["Days Absent"] = (
-        total_weekdays - unique_days["Days Present"]
-    ).clip(lower=0)
 
-    # Override for employees with non-standard office schedules
+    # Per-person in-office requirement: company default, custom schedule wins, capped by
+    # the holiday-adjusted week so a closed day never makes someone "Not Met".
+    _req_default = min(IN_OFFICE_REQUIRED_DAYS, total_weekdays)
+    unique_days["Required"] = _req_default
     for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
-        _cs_eff  = min(_cs_exp, total_weekdays)
         _cs_mask = unique_days["_name"].apply(_name_key) == _cs_key
         if _cs_mask.any():
-            unique_days.loc[_cs_mask, "Total Weekdays"] = _cs_eff
-            unique_days.loc[_cs_mask, "Attendance %"]   = (
-                (unique_days.loc[_cs_mask, "Days Present"] / _cs_eff * 100)
-                .round(1).clip(upper=100)
-            )
-            unique_days.loc[_cs_mask, "Days Absent"] = (
-                (_cs_eff - unique_days.loc[_cs_mask, "Days Present"]).clip(lower=0)
-            )
+            unique_days.loc[_cs_mask, "Required"] = min(_cs_exp, total_weekdays)
+
+    # Days Absent and Status are relative to the requirement (Days Absent > 0 ⇔ Not Met).
+    unique_days["Days Absent"] = (
+        unique_days["Required"] - unique_days["Days Present"]
+    ).clip(lower=0)
+    unique_days["Status"] = (
+        unique_days["Days Present"].ge(unique_days["Required"])
+        .map({True: "Met", False: "Not Met"})
+    )
 
     # Merge manager data (exact name match + fuzzy / last-name+first-initial fallback)
     if not manager_df.empty:
@@ -878,21 +887,28 @@ def process_attendance(
                 continue   # fuzzy match — person was present
             zero_rows.append({
                 "_name": n, "Days Present": 0,
-                "Days Absent": total_weekdays,
                 "Total Weekdays": total_weekdays,
                 "Attendance %": 0.0,
+                "Required": _req_default,
+                "Days Absent": _req_default,
+                "Status": "Not Met",
             })
 
     zero_df = pd.DataFrame(zero_rows)
 
-    # Apply custom schedule overrides to zero-attendance rows
+    # Apply per-person requirement to zero-attendance rows (custom schedule wins).
     if not zero_df.empty:
         for _cs_key, _cs_exp in CUSTOM_SCHEDULES.items():
-            _cs_eff  = min(_cs_exp, total_weekdays)
+            _cs_req  = min(_cs_exp, total_weekdays)
             _cs_mask = zero_df["_name"].apply(_name_key) == _cs_key
             if _cs_mask.any():
-                zero_df.loc[_cs_mask, "Total Weekdays"] = _cs_eff
-                zero_df.loc[_cs_mask, "Days Absent"]    = _cs_eff
+                zero_df.loc[_cs_mask, "Required"]    = _cs_req
+                zero_df.loc[_cs_mask, "Days Absent"] = _cs_req
+        # 0 present ⇒ Not Met, unless the requirement itself is 0 (e.g. holiday-only week).
+        zero_df["Status"] = (
+            zero_df["Days Present"].ge(zero_df["Required"])
+            .map({True: "Met", False: "Not Met"})
+        )
 
     if not zero_df.empty and not manager_df.empty:
         zero_df = _merge_managers(zero_df, manager_df)
@@ -987,6 +1003,9 @@ def _apply_sheet_formatting(
     emp_idx = next(
         (i + 1 for i, c in enumerate(col_names) if str(c) == "Employee"), None
     )
+    status_idx = next(
+        (i + 1 for i, c in enumerate(col_names) if str(c) == "Status"), None
+    )
 
     # ── Fonts & fills ──────────────────────────────────────────────────────
     even_fill  = PatternFill("solid", fgColor=EVEN_BG)
@@ -1025,8 +1044,8 @@ def _apply_sheet_formatting(
                 indent=0 if is_num else 1,
             )
 
-            if c_idx == pct_idx:
-                pass   # handled separately
+            if c_idx == pct_idx or c_idx == status_idx:
+                pass   # handled separately (coloured by Met/Not Met below)
             elif c_idx == emp_idx:
                 cell.font = emp_font
                 if is_even: cell.fill = even_fill
@@ -1040,28 +1059,44 @@ def _apply_sheet_formatting(
                 cell.font = data_font
                 if is_even: cell.fill = even_fill
 
-        if pct_idx:
-            pct_cell = row_cells[pct_idx - 1]
+        # Colour the Attendance % and Status cells by COMPLIANCE (Met/Not Met), not by
+        # the raw percentage — so a 1-day "Met" person reads green even at 20%.
+        if pct_idx or status_idx:
+            pct_cell    = row_cells[pct_idx - 1] if pct_idx else None
+            status_cell = row_cells[status_idx - 1] if status_idx else None
             try:
-                val = float(pct_cell.value)
-                key = (
-                    "zero"    if val == 0  else
-                    "atrisk"  if val < 60  else
-                    "caution" if val < 100 else
-                    "good"
-                )
+                val = float(pct_cell.value) if pct_cell is not None else None
+            except (TypeError, ValueError):
+                val = None
+            status_val = (
+                str(status_cell.value).strip()
+                if status_cell is not None and status_cell.value is not None else ""
+            )
+            if status_val == "Met":
+                key = "good"
+            elif status_val == "Not Met":
+                key = "zero" if val == 0 else "atrisk"
+            elif val is not None:   # no Status column — fall back to legacy % bands
+                key = "zero" if val == 0 else "atrisk" if val < 60 else "caution" if val < 100 else "good"
+            else:
+                key = None
+            if key and pct_cell is not None and val is not None:
                 pct_cell.fill          = pct_fills[key]
                 pct_cell.font          = pct_fonts[key]
                 pct_cell.number_format = '0.0"%"'
                 pct_cell.alignment     = Alignment(horizontal="center", vertical="center")
                 pct_cell.border        = _row_border
-            except (TypeError, ValueError):
-                pass
+            if key and status_cell is not None:
+                status_cell.fill      = pct_fills[key]
+                status_cell.font      = pct_fonts[key]
+                status_cell.alignment = Alignment(horizontal="center", vertical="center")
+                status_cell.border    = _row_border
 
     # ── Column widths ──────────────────────────────────────────────────────
     col_widths = {
         "#": 4, "Employee": 24, "Days Present": 13, "Days Absent": 12,
-        "Total Weekdays": 14, "Attendance %": 14, "Manager": 24, "Manager Email": 30,
+        "Total Weekdays": 14, "Attendance %": 14, "Status": 12,
+        "Manager": 24, "Manager Email": 30,
     }
     for c_idx, col_name in enumerate(col_names, start=1):
         ws.column_dimensions[get_column_letter(c_idx)].width = col_widths.get(
@@ -1077,7 +1112,7 @@ def _team_sheet(
     subtitle: str,
     tab_color: str = "8B8680",
 ) -> None:
-    cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+    cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
     sheet_df = (
         df_team[cols]
         .sort_values("Attendance %", ascending=True)
@@ -1105,7 +1140,7 @@ def generate_report_excel(
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
 
         # Sheet 1 — All Employees
-        cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %"]
+        cols = ["_name", "Days Present", "Days Absent", "Total Weekdays", "Attendance %", "Status"]
         if "Manager" in unique_days.columns:
             cols += ["Manager"]
         summary = (
@@ -1173,16 +1208,31 @@ def generate_report_excel(
 
 # ── Step 6b: Generate HTML report ─────────────────────────────────────────────
 
-def _html_pct_badge(val: float) -> str:
+def _html_pct_badge(val: float, status: str = "") -> str:
+    """Attendance % badge, coloured by compliance (Met=green / Not Met=orange,
+    red at 0%). Falls back to legacy value bands when no status is supplied."""
     try:
         v = float(val)
-        if v == 0:    cls, label = "badge-red",    f"{v:.0f}%"
-        elif v < 60:  cls, label = "badge-orange",  f"{v:.0f}%"
-        elif v < 100: cls, label = "badge-yellow",  f"{v:.0f}%"
-        else:         cls, label = "badge-green",   f"{v:.0f}%"
+        label = f"{v:.0f}%"
+        if status == "Met":
+            cls = "badge-green"
+        elif status == "Not Met":
+            cls = "badge-red" if v == 0 else "badge-orange"
+        else:  # no status — legacy value bands
+            cls = ("badge-red" if v == 0 else "badge-orange" if v < 60
+                   else "badge-yellow" if v < 100 else "badge-green")
         return f'<span class="badge {cls}">{label}</span>'
     except (TypeError, ValueError):
         return escape(str(val))
+
+
+def _html_status_badge(status) -> str:
+    s = str(status)
+    if s == "Met":
+        return '<span class="badge badge-green">&#10003; Met</span>'
+    if s == "Not Met":
+        return '<span class="badge badge-red">&#9888; Not Met</span>'
+    return escape(s)
 
 
 def _html_table(df: pd.DataFrame, show_manager: bool = True) -> str:
@@ -1202,14 +1252,15 @@ def _html_table(df: pd.DataFrame, show_manager: bool = True) -> str:
             f'<td class="num">{int(row["Days Present"])}</td>'
             f'<td class="num">{int(row["Days Absent"])}</td>'
             f'<td class="num light">{int(row["Total Weekdays"])}</td>'
-            f'<td class="center">{_html_pct_badge(row["Attendance %"])}</td>'
+            f'<td class="center">{_html_pct_badge(row["Attendance %"], row.get("Status", ""))}</td>'
+            f'<td class="center">{_html_status_badge(row.get("Status", ""))}</td>'
             f"</tr>"
         )
     return (
         f'<table><thead><tr>'
         f'<th style="width:36px">#</th><th style="text-align:left">Employee</th>'
         f"{mgr_th}"
-        f'<th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th>'
+        f'<th>Present</th><th>Absent</th><th>Total</th><th>Attendance</th><th>Status</th>'
         f'</tr></thead><tbody>{rows}</tbody></table>'
     )
 
@@ -1226,8 +1277,9 @@ def generate_report_html(
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 60).sum())
+    at_risk    = int((unique_days["Status"] == "Not Met").sum())
     zero_count = int((unique_days["Attendance %"] == 0).sum())
+    _hols      = observed_holidays_in_range(start, end)
 
     # Logo (base64-embedded if file exists)
     logo_path = Path(__file__).parent / "techsur_logo.png"
@@ -1264,9 +1316,9 @@ def generate_report_html(
             team   = unique_days[unique_days["Manager"] == mgr].copy()
             avg    = team["Attendance %"].mean()
             n      = len(team)
-            risk_n = int((team["Attendance %"] < 60).sum())
+            risk_n = int((team["Status"] == "Not Met").sum())
             tbl    = _html_table(team.sort_values("Attendance %"), show_manager=False)
-            risk_pill = f'<span class="risk-pill">{risk_n} at risk</span>' if risk_n > 0 else ""
+            risk_pill = f'<span class="risk-pill">{risk_n} not met</span>' if risk_n > 0 else ""
             mgr_sections += (
                 f'<details class="mgr-block">'
                 f'<summary class="mgr-bar">'
@@ -1317,9 +1369,19 @@ def generate_report_html(
         f'<div class="card"><div class="stat" style="color:{avg_color}">{avg_pct:.1f}%</div>'
         f'<div class="stat-label">Avg Attendance</div></div>'
         f'<div class="card"><div class="stat" style="color:{risk_color}">{at_risk}</div>'
-        f'<div class="stat-label">At Risk (&lt;60%)</div></div>'
+        f'<div class="stat-label">Not Met</div></div>'
         f'<div class="card"><div class="stat" style="color:{zero_color}">{zero_count}</div>'
         f'<div class="stat-label">Zero Attendance</div></div>'
+    )
+
+    holiday_note = (
+        f' &nbsp;&bull;&nbsp; {len(_hols)} holiday{"s" if len(_hols) != 1 else ""} excluded (no make-up)'
+        if _hols else ""
+    )
+    legend = (
+        "&#10003; <b>Met</b> = attended at least the required in-office days "
+        "(default 3/week; fewer for some roles). <b>Attendance %</b> is the honest share "
+        "of the week worked in-office. Holidays are excluded and need no make-up."
     )
 
     css = """
@@ -1391,12 +1453,13 @@ def generate_report_html(
     <div class="header-left">{logo_html}</div>
     <div class="header-right">
       <div class="report-title">Weekly Attendance Report</div>
-      <div class="report-meta"><strong>{period}</strong> &nbsp;&bull;&nbsp; {total_weekdays} working day{"s" if total_weekdays!=1 else ""}</div>
+      <div class="report-meta"><strong>{period}</strong> &nbsp;&bull;&nbsp; {total_weekdays} working day{"s" if total_weekdays!=1 else ""}{holiday_note}</div>
     </div>
   </div>
   <div class="cards">{cards}</div>
   <div class="section">
     <div class="section-header"><h2>All Employees</h2><span class="pill">{total_emp} total</span></div>
+    <p class="note">{legend}</p>
     {all_table}
   </div>
   <div class="section">
@@ -1497,7 +1560,7 @@ def send_email_report(
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 60).sum())
+    at_risk    = int((unique_days["Status"] == "Not Met").sum())
     zero_count = int((unique_days["Attendance %"] == 0).sum())
 
     sharepoint_line = (
@@ -1518,13 +1581,15 @@ def send_email_report(
       <td>{total_emp}</td></tr>
   <tr><td style="padding:4px 12px 4px 0;"><b>Average attendance</b></td>
       <td>{avg_pct:.1f}%</td></tr>
-  <tr><td style="padding:4px 12px 4px 0;"><b>At risk (&lt;60%)</b></td>
+  <tr><td style="padding:4px 12px 4px 0;"><b>Not met requirement</b></td>
       <td>{at_risk}</td></tr>
   <tr><td style="padding:4px 12px 4px 0;"><b>0 attendance</b></td>
       <td>{zero_count}</td></tr>
 </table>
 
 {sharepoint_line}
+
+<p style="color:#555;font-size:12px;">In-office requirement: 3 days/week (fewer for some roles). &ldquo;Not met&rdquo; means the employee attended fewer than their required in-office days &mdash; managers, please note any exceptions (PTO, customer-site, comp time) in the channel. Holidays are excluded and need no make-up.</p>
 
 <p style="color:#888;font-size:12px;">Sent automatically by the TechSur Attendance Tracker.</p>
 """
@@ -1597,7 +1662,7 @@ def post_to_teams_chat_webhook(
 
     total_emp  = len(unique_days)
     avg_pct    = unique_days["Attendance %"].mean() if total_emp else 0.0
-    at_risk    = int((unique_days["Attendance %"] < 60).sum())
+    at_risk    = int((unique_days["Status"] == "Not Met").sum())
     zero_count = int((unique_days["Attendance %"] == 0).sum())
 
     facts = [
@@ -1605,7 +1670,7 @@ def post_to_teams_chat_webhook(
         {"title": "Working days",       "value": str(total_weekdays)},
         {"title": "Employees tracked",  "value": str(total_emp)},
         {"title": "Average attendance", "value": f"{avg_pct:.1f}%"},
-        {"title": "At risk (<60%)",     "value": str(at_risk)},
+        {"title": "Not met requirement", "value": str(at_risk)},
         {"title": "0 attendance",       "value": str(zero_count)},
     ]
 
