@@ -51,7 +51,7 @@ OWNER_EXCEPTIONS = {
 # Employees with non-standard in-office schedules.
 # Maps _name_key → expected days per week at the Reston office.
 CUSTOM_SCHEDULES: dict[str, int] = {
-    "aashti alam":        2,   # 2 office days/week (approved schedule)
+    "aashti alam":        1,   # 1 office day/week (approved schedule)
     "joe ghaleb":         1,   # Joe Ghaleb — 1 day/week in office
     "shawn faunce":       3,
     "david prompovitch":  3,

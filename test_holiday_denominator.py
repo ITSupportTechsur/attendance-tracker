@@ -86,10 +86,10 @@ def test_badge_swipe_on_holiday_is_ignored_no_over_100():
 
 def test_custom_schedule_employee_in_holiday_week():
     """Custom-schedule people keep the honest denominator (the week), NOT an overridden
-    one. Joe Ghaleb (req 1) present 1 reads 25 % with Status Met; Aashti Alam (req 2)
+    one. Joe Ghaleb (req 1) present 1 reads 25 % with Status Met; Mary Raguso (req 2)
     present 1 of 2 reads 25 % with Status Not Met."""
     rows  = [_row("Joe", "Ghaleb", WORKDAYS[0])]
-    rows += [_row("Aashti", "Alam", WORKDAYS[0])]   # 1 of required 2
+    rows += [_row("Mary", "Raguso", WORKDAYS[0])]   # 1 of required 2
     unique_days, _zero, total, _merged, _junk = wr.process_attendance(
         _badge_excel(rows), START, END, pd.DataFrame(), set())
 
@@ -101,11 +101,11 @@ def test_custom_schedule_employee_in_holiday_week():
     assert joe["Status"] == "Met"                # 1 >= 1
     assert int(joe["Days Absent"]) == 0
 
-    aashti = unique_days[unique_days["_name"] == "Aashti Alam"].iloc[0]
-    assert int(aashti["Required"]) == 2
-    assert float(aashti["Attendance %"]) == 25.0
-    assert aashti["Status"] == "Not Met"         # 1 < 2
-    assert int(aashti["Days Absent"]) == 1
+    mary = unique_days[unique_days["_name"] == "Mary Raguso"].iloc[0]
+    assert int(mary["Required"]) == 2
+    assert float(mary["Attendance %"]) == 25.0
+    assert mary["Status"] == "Not Met"           # 1 < 2
+    assert int(mary["Days Absent"]) == 1
 
 
 def test_zero_attendance_uses_holiday_adjusted_denominator():
