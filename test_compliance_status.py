@@ -95,10 +95,10 @@ def test_one_day_person_reads_honest_20pct_but_met():
     assert int(joe["Days Absent"]) == 0
 
 
-def test_two_day_customer_site_person_met_at_40pct():
-    """Aashti (custom 2 office days) present 2 → 40% honest, Met."""
-    ud, _ = _run([_row("Aashti", "Alam", WORKDAYS[0]), _row("Aashti", "Alam", WORKDAYS[1])])
-    a = ud[ud["_name"] == "Aashti Alam"].iloc[0]
+def test_two_day_person_met_at_40pct():
+    """A custom 2-office-days person present 2 → 40% honest, Met."""
+    ud, _ = _run([_row("Mary", "Raguso", WORKDAYS[0]), _row("Mary", "Raguso", WORKDAYS[1])])
+    a = ud[ud["_name"] == "Mary Raguso"].iloc[0]
     assert int(a["Required"]) == 2
     assert float(a["Attendance %"]) == 40.0
     assert a["Status"] == "Met"
@@ -106,12 +106,23 @@ def test_two_day_customer_site_person_met_at_40pct():
 
 
 def test_two_day_person_one_day_is_not_met():
-    ud, _ = _run([_row("Aashti", "Alam", WORKDAYS[0])])   # 1 of required 2
-    a = ud[ud["_name"] == "Aashti Alam"].iloc[0]
+    ud, _ = _run([_row("Mary", "Raguso", WORKDAYS[0])])   # 1 of required 2
+    a = ud[ud["_name"] == "Mary Raguso"].iloc[0]
     assert int(a["Required"]) == 2
     assert float(a["Attendance %"]) == 20.0
     assert a["Status"] == "Not Met"
     assert int(a["Days Absent"]) == 1
+
+
+def test_aashti_one_day_requirement_met():
+    """Aashti Alam is at FAA two days/week, so her TechSur requirement is 1 day/week
+    (owner request, Marina Fox 2026-07-01). Present 1 → honest 20%, Met."""
+    ud, _ = _run([_row("Aashti", "Alam", WORKDAYS[0])])
+    a = ud[ud["_name"] == "Aashti Alam"].iloc[0]
+    assert int(a["Required"]) == 1
+    assert float(a["Attendance %"]) == 20.0
+    assert a["Status"] == "Met"                # 1 >= 1
+    assert int(a["Days Absent"]) == 0
 
 
 def test_zero_attendance_person_is_not_met():
