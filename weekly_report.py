@@ -320,6 +320,45 @@ def _canonical_name_map(names, manager_df: pd.DataFrame) -> dict:
     return canon
 
 
+def _typo_display_map(names, manager_df: pd.DataFrame) -> dict:
+    """Relabel a badge spelling to its Azure AD display name when it is a *confident
+    typo* of a real AD person — matched by difflib fuzzy (0.82) or last-name+first-
+    initial, but NOT by exact key. This is the display half of the name fix: a lone
+    consistent misspelling like 'Rami Dasari' (AD 'Ram Dasari') or 'Arhun Kesiraju'
+    (AD 'Arjun Kesiraju') prints under the correct name instead of the spelling a
+    manager would flag — even when only that one spelling swiped that week (so
+    _canonical_name_map, which only merges 2+ spellings, left it untouched).
+
+    Mirrors the resolution used by _merge_managers / collect_name_audit so the report
+    shows exactly the name the mid-week audit promised it would ('auto-corrected in
+    the report'). Deliberately skips EXACT _name_key matches, so a legitimate short
+    form is preserved: 'Daniel Thompson' keeps its spelling even though AD says
+    'Daniel Joseph Thompson', because both fold to the same first+last key. Owner
+    exceptions are never anchors (Aaniya !-> Amit). Returns {badge_name: ad_display}
+    for the spellings that change only — apply it to the REPORT copy of the names,
+    never before the source audits, which must keep seeing the raw badge spelling."""
+    if manager_df is None or manager_df.empty:
+        return {}
+    ad_display: dict = {}
+    for e in manager_df["Employee"]:
+        ad_display.setdefault(_name_key(e), e)
+    ad_key_set    = set(ad_display)
+    fallback_keys = [k for k in ad_key_set if k not in OWNER_EXCEPTIONS]
+
+    canon: dict = {}
+    for n in set(names):
+        k = _name_key(n)
+        if k in ad_key_set:
+            continue                                   # first+last already match AD
+        close = difflib.get_close_matches(k, fallback_keys, n=1, cutoff=0.82)
+        match = close[0] if close else _last_first_initial_match(k, fallback_keys)
+        if match:
+            ad_name = ad_display.get(match)
+            if ad_name and ad_name != n:
+                canon[n] = ad_name
+    return canon
+
+
 # ── Step 1: Download badge Excel from D3000 ───────────────────────────────────
 
 def _d3000_login(page) -> None:
@@ -1919,6 +1958,27 @@ def main():
                      + ", ".join(repr(n) for n in no_mgr))
         log.info("=== Verify-only run complete (no report sent) ===")
         return
+
+    # 5c. Report display name fix. A lone consistent typo ('Rami Dasari' when only
+    # that misspelling swiped this week) resolves to a real Azure AD person but, being
+    # a single spelling, was printed verbatim — so a manager saw the misspelling even
+    # after the DataWatch card was corrected (a correction only re-stamps FUTURE
+    # swipes; the week's already-logged swipes keep the old name). Relabel such
+    # spellings to their Azure AD display name for the REPORT ONLY. This runs AFTER
+    # the name-audit / pre-flight / verify-only branches have returned, so those still
+    # see and flag the raw badge spelling and the source keeps getting cleaned. Legit
+    # short forms ('Daniel Thompson' vs AD 'Daniel Joseph Thompson') share the
+    # first+last key and are left as-is; owner exceptions are never anchors.
+    _report_names = list(unique_days["_name"])
+    if not zero_df.empty:
+        _report_names += list(zero_df["_name"])
+    typo_display = _typo_display_map(_report_names, manager_df)
+    if typo_display:
+        log.info("Report display: relabeled typo spelling(s) to Azure AD name — "
+                 + ", ".join(f"{b!r}→{a!r}" for b, a in sorted(typo_display.items())))
+        unique_days["_name"] = unique_days["_name"].map(lambda n: typo_display.get(n, n))
+        if not zero_df.empty:
+            zero_df["_name"] = zero_df["_name"].map(lambda n: typo_display.get(n, n))
 
     # 6. Generate Excel report
     filename     = f"Attendance_Report_{start}_{end}.xlsx"
