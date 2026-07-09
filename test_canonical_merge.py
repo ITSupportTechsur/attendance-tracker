@@ -176,6 +176,59 @@ def test_junk_fob_with_activity_is_dropped_and_surfaced():
     assert "Spare Mitchel Office" in junk, f"spare must be surfaced in junk_active, got {junk}"
 
 
+# ── Report display name fix: _typo_display_map ────────────────────────────────
+# A lone consistent typo ('Rami Dasari' when only that spelling swiped) is left as
+# a distinct row by process_attendance so the mid-week source audit keeps flagging
+# it, then relabeled to the Azure AD display name for the REPORT ONLY.
+
+_DISPLAY_MGRS = pd.DataFrame([
+    {"Employee": "Ram Dasari",             "Manager": "Kumud Trikha",  "Manager Email": "kumud@techsur.solutions"},
+    {"Employee": "Arjun Kesiraju",         "Manager": "Parag Matalia", "Manager Email": "parag@techsur.solutions"},
+    {"Employee": "Daniel Joseph Thompson", "Manager": "Craig Park",    "Manager Email": "craig@techsur.solutions"},
+])
+
+
+def test_typo_display_relabels_lone_misspelling():
+    """The exact bug: 'Rami Dasari' swiped alone all week -> report shows 'Ram Dasari'."""
+    m = wr._typo_display_map(["Rami Dasari"], _DISPLAY_MGRS)
+    assert m == {"Rami Dasari": "Ram Dasari"}, f"expected Rami->Ram relabel, got {m}"
+
+
+def test_typo_display_leaves_exact_ad_match_untouched():
+    """A name already spelled like AD needs no relabel."""
+    assert wr._typo_display_map(["Ram Dasari"], _DISPLAY_MGRS) == {}
+
+
+def test_typo_display_preserves_legit_short_form():
+    """'Daniel Thompson' shares the first+last key with AD 'Daniel Joseph Thompson',
+    so it is an EXACT key match, not a typo — the short badge form is preserved and
+    NOT force-expanded to the full AD name (same contract as the merge path)."""
+    assert wr._typo_display_map(["Daniel Thompson"], _DISPLAY_MGRS) == {}
+
+
+def test_typo_display_never_relabels_onto_owner():
+    """A near-namesake absent from AD must not snap onto an owner exception."""
+    mgrs = pd.DataFrame([
+        {"Employee": "Amit Yadav",  "Manager": "No Manager",    "Manager Email": ""},
+    ])
+    # OWNER_EXCEPTIONS excludes Amit from the anchor pool, so 'Anita Yadav' finds no
+    # match and is left alone rather than being renamed to the owner.
+    assert wr._typo_display_map(["Anita Yadav"], mgrs) == {}
+
+
+def test_typo_display_leaves_unmapped_name_alone():
+    """A name that matches no AD person at all is left as-is (surfaced elsewhere as
+    'unmapped'), never relabeled onto an unrelated person."""
+    assert wr._typo_display_map(["Zoltan Qwixby"], _DISPLAY_MGRS) == {}
+
+
+def test_typo_display_relabels_last_first_initial_nickname():
+    """'Arhun Kesiraju' (fuzzy) and nickname-style last+first-initial cases resolve to
+    the AD display name just like the audit classifies them."""
+    m = wr._typo_display_map(["Arhun Kesiraju"], _DISPLAY_MGRS)
+    assert m == {"Arhun Kesiraju": "Arjun Kesiraju"}, f"got {m}"
+
+
 if __name__ == "__main__":
     test_split_spellings_are_summed_into_one_row()
     test_single_spelling_is_never_renamed_to_full_ad_name()
@@ -185,4 +238,10 @@ if __name__ == "__main__":
     test_nickname_does_not_fold_onto_owner()
     test_credential_suffix_combines_report_rows()
     test_junk_fob_with_activity_is_dropped_and_surfaced()
+    test_typo_display_relabels_lone_misspelling()
+    test_typo_display_leaves_exact_ad_match_untouched()
+    test_typo_display_preserves_legit_short_form()
+    test_typo_display_never_relabels_onto_owner()
+    test_typo_display_leaves_unmapped_name_alone()
+    test_typo_display_relabels_last_first_initial_nickname()
     print("All canonical-merge regression tests passed ✅")
