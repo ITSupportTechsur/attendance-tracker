@@ -82,6 +82,7 @@ DEFAULT_EXCLUDE_NAMES = {
     "louie chen",           # removed per management
     "megan giesy",          # remote / Texas — not in office
     "aaniya yadav",         # not a TechSur AD employee — excluded per management
+    "ganesh patil",         # Spectiva Group contractor (ganesh.patil@spectivagroup.com) — not TechSur, excluded per management
 }
 
 # Employees who are intentionally without a manager (e.g. company owner).
