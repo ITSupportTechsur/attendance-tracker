@@ -83,6 +83,8 @@ DEFAULT_EXCLUDE_NAMES = {
     "megan giesy",          # remote / Texas — not in office
     "aaniya yadav",         # not a TechSur AD employee — excluded per management
     "ganesh patil",         # Spectiva Group contractor (ganesh.patil@spectivagroup.com) — not TechSur, excluded per management
+    "trish regan",          # attends customer site in Rockville 3 days/week — excluded per management
+    "harsha vardhan",       # lives outside mileage zone — excluded per management
 }
 
 # Employees who are intentionally without a manager (e.g. company owner).
@@ -98,7 +100,7 @@ CUSTOM_SCHEDULES: dict[str, int] = {
     "aashti alam":        1,   # 1 office day/week (approved schedule)
     "joe ghaleb":         1,   # Joe Ghaleb — 1 day/week in office
     "shawn faunce":       3,
-    "david prompovitch":  3,
+    "david prompovitch":  2,   # ZTA team — 2 office days/week (not 3)
     "nat iyer":           3,
     "tapan rath":         3,
     "gyvonda mccain":     2,
