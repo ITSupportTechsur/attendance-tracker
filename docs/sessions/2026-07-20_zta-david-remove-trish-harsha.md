@@ -29,12 +29,12 @@ Rationale (per management):
 - **Trish Regan** — attends the customer site in Rockville 3 days/week.
 - **Harsha Vardhan** — lives outside the mileage zone.
 
-> Sanity check still open: "David" was matched to `david prompovitch` (the only David
-> in the roster config, and the only one set to 3). Confirm this is the ZTA David.
+> ✅ Confirmed by Paul: the ZTA "David" is `david prompovitch` (the only David in the
+> roster config, and the only one previously set to 3). Match verified.
 
 ---
 
-## Reply to Paul (ready to send from the TechSur mailbox)
+## Reply to Paul (✅ sent 2026-07-20 from the TechSur mailbox)
 
 **Subject:** RE: Attendance report updates
 
@@ -76,5 +76,5 @@ git push -u origin zta-david-remove-trish-harsha
 ## What's NEXT
 1. Push the branch as TechSur (above).
 2. Open PR (base `exclude-ganesh-patil` while #6 is open, else `main`).
-3. Send the reply to Paul from the TechSur mailbox.
-4. Confirm "David" = `david prompovitch` is the correct ZTA David.
+3. ~~Send the reply to Paul from the TechSur mailbox~~ — ✅ sent 2026-07-20.
+4. ~~Confirm "David" = `david prompovitch`~~ — ✅ confirmed by Paul.
